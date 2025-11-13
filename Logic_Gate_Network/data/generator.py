@@ -34,5 +34,7 @@ class RealDataGenerator:
         if tuple(sample) not in {tuple(s) for s in samples}: # 중복방지
           samples.append(sample)
       
-      
+    if len(samples) < count:
+      raise RuntimeError(f"Failed to generate {count} samples. Only generated {len(samples)} samples after {max_attempts} attempts.")
+        
     return samples
