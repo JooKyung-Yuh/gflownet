@@ -2,8 +2,10 @@
 # BaseRule과 Rules을 외부에서 import할 수 있게 하기 작업
 from .base import BaseRule
 from .rule_1 import Rule1_NoConsecutive1s
+from .checker import RuleChecker
 
 __all__ = [
   "BaseRule", 
   "Rule1_NoConsecutive1s",
+  "RuleChecker",
   ]
