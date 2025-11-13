@@ -58,3 +58,13 @@ class BaseRule(ABC): # 추상 클래스, 이후에 class Rule1(BaseRule)처럼 �
         A binary sequence of length equal to rule dimension.
     """
     pass
+  
+  @abstractmethod
+  def generate_violating_candidate(self) -> list[int]:
+    """
+    Generate a violating candidate sample that likely not satisfies this rule.
+    
+    Returns:
+        A binary sequence of length equal to rule dimension.
+    """
+    pass

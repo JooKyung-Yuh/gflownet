@@ -37,3 +37,15 @@ class Rule1_NoConsecutive1s(BaseRule):
                     sequence.append(random.choice([0, 1]))
         
         return sequence
+    
+    def generate_violating_candidate(self) -> list[int]:
+        """Generate violating candidate by forcing consecutive 1s for Rule 1"""
+        rule_dimension = self.get_dimension()
+        sequence = [random.randint(0, 1) for _ in range(rule_dimension)]
+        
+        # Force at least one violation (consecutive 1s)
+        pos = random.randint(0, rule_dimension - 2)
+        sequence[pos] = 1
+        sequence[pos + 1] = 1
+        
+        return sequence

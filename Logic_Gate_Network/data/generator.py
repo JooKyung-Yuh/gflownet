@@ -51,7 +51,38 @@ class FakeDataGenerator:
   This class creates binary sequences that intentionally break the constraints
   defined by a rule object. Ensures no overlap with Real data samples.
   """
-  pass
+  def generate(self, rule, real_samples, count=500) -> list[list[int]]:
+    """
+    Generate samples that violate the given rule.
+
+    Args:
+        rule: A BaseRule instance to validate samples.
+        real_samples: List of Real samples (to avoid overlap).
+        count: Number of samples to generate (default: 500).
+
+    Returns:
+        List of invalid samples (each sample is a list of 0s and 1s).
+
+    Raises:
+        RuntimeError: If unable to generate enough samples.
+    """
+    samples = [] # Fake 샘플 저장용
+    real_set = {tuple(s) for s in real_samples} # Real 데이터를 set으로 변환 (O(1) 검색)
+    max_attempts = count * 100 # 최대 시도 횟수
+    attempts = 0
+    
+    while len(samples) < count and attempts < max_attempts: # 샘플이 충분히 모이면 (len(samples) >= count) 루프 종료, 또는 시도 횟수 초과하면 (attempts >= max_attempts) 루프 종료
+      sample = rule.generate_violating_candidate()
+      if not rule.is_valid(sample):
+        sample_tuple = tuple(sample)
+        if sample_tuple not in real_set and sample_tuple not in {tuple(s) for s in samples}:
+          samples.append(sample)
+
+      attempts += 1
+    
+    if len(samples) < count:
+      raise RuntimeError(f"Failed to generate {count} fake samples. Only generated {len(samples)} samples after {max_attempts} attempts.")
+    return samples
 
 
 
