@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 class BaseRule(ABC): # 추상 클래스, 이후에 class Rule1(BaseRule)처럼 상속받아 사용  
   @abstractmethod # 추상 메서드, 하위 클래스에서 반드시 구현해야 함
-  def is_valid(self, sequence):
+  def is_valid(self, sequence) -> bool :
     """
     Check if the given sequence is valid according to the rule.
     메서드 이름: is_valid
@@ -14,7 +14,7 @@ class BaseRule(ABC): # 추상 클래스, 이후에 class Rule1(BaseRule)처럼 �
     pass
 
   @abstractmethod
-  def get_dimension(self):
+  def get_dimension(self) -> int:
     """
     Get the dimension of the rule.
     메서드 이름: get_dimension
@@ -26,7 +26,7 @@ class BaseRule(ABC): # 추상 클래스, 이후에 class Rule1(BaseRule)처럼 �
     pass
   
   @abstractmethod
-  def get_name(self):
+  def get_name(self) -> str:
     """
     Get the name of the rule.
     메서드 이름: get_name
@@ -38,7 +38,7 @@ class BaseRule(ABC): # 추상 클래스, 이후에 class Rule1(BaseRule)처럼 �
     pass
   
   @abstractmethod
-  def get_description(self):
+  def get_description(self) -> str:
     """
     Get the description of the rule.
     메서드 이름: get_description
