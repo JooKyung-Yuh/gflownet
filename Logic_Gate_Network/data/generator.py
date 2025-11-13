@@ -41,66 +41,79 @@ class RealDataGenerator:
       raise RuntimeError(f"Failed to generate {count} samples. Only generated {len(samples)} samples after {max_attempts} attempts.")
         
     return samples
+
   
-  def save_to_csv(self, samples, filename=None) -> str:
-    """
-    Save samples to CSV file.
-
-    Args:
-        samples: List of samples to save.
-        filename: Optional filename. If None, auto-generates with timestamp.
-
-    Returns:
-        str: Path to the saved CSV file.
-    """
-    output_dir = "csv" 
-    os.makedirs(output_dir, exist_ok=True)
-
-    if filename is None:
-      filename = os.path.join(output_dir, datetime.datetime.now().strftime("samples_%Y-%m-%d_%H-%M-%S.csv"))
-
-    
-    with open(filename, 'w', newline='') as csvfile:
-      writer = csv.writer(csvfile)
-      
-      header = [f'bit_{i}' for i in range(len(samples[0]))] # len(samples[0]): 첫 번째 샘플의 길이 (10개), List comprehension으로 ['bit_0', 'bit_1', ..., 'bit_9'] 생성
-      writer.writerow(header) #CSV 첫 줄에 헤더 작성
-      
-      for sample in samples:
-        writer.writerow(sample)
-        
-    return os.path.abspath(filename)
   
-  def save_to_json(self, samples, rule, filename=None) -> str:
-    """
-    Save samples to JSON file with metadata.
+class FakeDataGenerator: 
+  """
+  FakeDataGenerator: Generates samples that violate given rules.
 
-    Args:
-        samples: List of samples to save.
-        rule: Rule object for metadata extraction.
-        filename: Optional filename. If None, auto-generates with timestamp.
+  This class creates binary sequences that intentionally break the constraints
+  defined by a rule object. Ensures no overlap with Real data samples.
+  """
+  pass
 
-    Returns:
-        str: Path to the saved JSON file.
-    """
-    output_dir = "json"
-    os.makedirs(output_dir, exist_ok=True)
+
+
+def save_to_csv(samples, filename=None) -> str:
+  """
+  Save samples to CSV file.
+
+  Args:
+      samples: List of samples to save.
+      filename: Optional filename. If None, auto-generates with timestamp.
+
+  Returns:
+      str: Path to the saved CSV file.
+  """
+  output_dir = "csv" 
+  os.makedirs(output_dir, exist_ok=True)
+
+  if filename is None:
+    filename = os.path.join(output_dir, datetime.datetime.now().strftime("samples_%Y-%m-%d_%H-%M-%S.csv"))
+
+  
+  with open(filename, 'w', newline='') as csvfile:
+    writer = csv.writer(csvfile)
     
-    if filename is None:
-      filename = os.path.join(output_dir, datetime.datetime.now().strftime("samples_%Y-%m-%d_%H-%M-%S.json"))
+    header = [f'bit_{i}' for i in range(len(samples[0]))] # len(samples[0]): 첫 번째 샘플의 길이 (10개), List comprehension으로 ['bit_0', 'bit_1', ..., 'bit_9'] 생성
+    writer.writerow(header) #CSV 첫 줄에 헤더 작성
     
-    data = {
-      "metadata": {
-        "rule_name": rule.get_name(),
-        "rule_description": rule.get_description(),
-        "dimension": rule.get_dimension(),
-        "generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "sample_count": len(samples)
-      },
-      "samples": samples
-    }
-    
-    with open(filename, 'w') as jsonfile:
-      json.dump(data, jsonfile, indent=2)
-    
-    return os.path.abspath(filename)
+    for sample in samples:
+      writer.writerow(sample)
+      
+  return os.path.abspath(filename)
+
+def save_to_json(samples, rule, filename=None) -> str:
+  """
+  Save samples to JSON file with metadata.
+
+  Args:
+      samples: List of samples to save.
+      rule: Rule object for metadata extraction.
+      filename: Optional filename. If None, auto-generates with timestamp.
+
+  Returns:
+      str: Path to the saved JSON file.
+  """
+  output_dir = "json"
+  os.makedirs(output_dir, exist_ok=True)
+  
+  if filename is None:
+    filename = os.path.join(output_dir, datetime.datetime.now().strftime("samples_%Y-%m-%d_%H-%M-%S.json"))
+  
+  data = {
+    "metadata": {
+      "rule_name": rule.get_name(),
+      "rule_description": rule.get_description(),
+      "dimension": rule.get_dimension(),
+      "generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+      "sample_count": len(samples)
+    },
+    "samples": samples
+  }
+  
+  with open(filename, 'w') as jsonfile:
+    json.dump(data, jsonfile, indent=2)
+  
+  return os.path.abspath(filename)
