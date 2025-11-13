@@ -2,6 +2,7 @@
 import datetime
 import csv
 import json
+import os
 
 class RealDataGenerator:
   """
@@ -52,8 +53,12 @@ class RealDataGenerator:
     Returns:
         str: Path to the saved CSV file.
     """
+    output_dir = "csv" 
+    os.makedirs(output_dir, exist_ok=True)
+
     if filename is None:
-      filename = datetime.datetime.now().strftime("samples_%Y-%m-%d_%H-%M-%S.csv")
+      filename = os.path.join(output_dir, datetime.datetime.now().strftime("samples_%Y-%m-%d_%H-%M-%S.csv"))
+
     
     with open(filename, 'w', newline='') as csvfile:
       writer = csv.writer(csvfile)
@@ -64,7 +69,7 @@ class RealDataGenerator:
       for sample in samples:
         writer.writerow(sample)
         
-    return filename
+    return os.path.abspath(filename)
   
   def save_to_json(self, samples, rule, filename=None) -> str:
     """
@@ -78,8 +83,11 @@ class RealDataGenerator:
     Returns:
         str: Path to the saved JSON file.
     """
+    output_dir = "json"
+    os.makedirs(output_dir, exist_ok=True)
+    
     if filename is None:
-      filename = datetime.datetime.now().strftime("samples_%Y-%m-%d_%H-%M-%S.json")
+      filename = os.path.join(output_dir, datetime.datetime.now().strftime("samples_%Y-%m-%d_%H-%M-%S.json"))
     
     data = {
       "metadata": {
@@ -95,4 +103,4 @@ class RealDataGenerator:
     with open(filename, 'w') as jsonfile:
       json.dump(data, jsonfile, indent=2)
     
-    return filename
+    return os.path.abspath(filename)
