@@ -29,9 +29,9 @@ class RealDataGenerator:
     while len(samples) < count and attempts < max_attempts: # 샘플이 충분히 모이면 (len(samples) >= count) 루프 종료, 또는 시도 횟수 초과하면 (attempts >= max_attempts) 루프 종료
       attempts += 1
       
-      sample = self._generate_candidate(rule)
-      if rule.is_valid(sample):
-        if tuple(sample) not in {tuple(s) for s in samples}:
+      sample = rule.generate_candidate()
+      if rule.is_valid(sample):                              # valid 한지 확인
+        if tuple(sample) not in {tuple(s) for s in samples}: # 중복방지
           samples.append(sample)
       
       
