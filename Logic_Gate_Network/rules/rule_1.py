@@ -1,4 +1,5 @@
 from .base import BaseRule
+import random
 class Rule1_NoConsecutive1s(BaseRule):
     """
     Rule 1: No two consecutive 1s are allowed in the input sequence.
@@ -21,3 +22,18 @@ class Rule1_NoConsecutive1s(BaseRule):
       
     def get_description(self):
         return self.description
+    
+    def generate_candidate(self) -> list[int]:
+        """Generate a candidate sample using constraint satisfaction for Rule 1."""
+        rule_dimension = self.get_dimension()
+        sequence = []
+        for i in range(rule_dimension):
+            if i == 0:
+                sequence.append(random.choice([0, 1]))
+            else:
+                if sequence[i-1] == 1:
+                    sequence.append(0)
+                else:
+                    sequence.append(random.choice([0, 1]))
+        
+        return sequence

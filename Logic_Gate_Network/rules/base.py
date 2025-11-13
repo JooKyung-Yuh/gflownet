@@ -48,3 +48,13 @@ class BaseRule(ABC): # 추상 클래스, 이후에 class Rule1(BaseRule)처럼 �
     내용: pass
     """
     pass
+  
+  @abstractmethod
+  def generate_candidate(self) -> list[int]:
+    """
+    Generate a candidate sample that likely satisfies this rule.
+    
+    Returns:
+        A binary sequence of length equal to rule dimension.
+    """
+    pass

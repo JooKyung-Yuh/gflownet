@@ -29,20 +29,10 @@ class RealDataGenerator:
     while len(samples) < count and attempts < max_attempts: # 샘플이 충분히 모이면 (len(samples) >= count) 루프 종료, 또는 시도 횟수 초과하면 (attempts >= max_attempts) 루프 종료
       attempts += 1
       
+      sample = self._generate_candidate(rule)
+      if rule.is_valid(sample):
+        if tuple(sample) not in {tuple(s) for s in samples}:
+          samples.append(sample)
+      
       
     return samples
-    
-  def _generate_candidate(self, rule) -> list[int]:
-    """Generate a candidate sample using constraint satisfaction for Rule 1."""
-    rule_dimension = rule.get_dimension()
-    sequence = []
-    for i in range(rule_dimension):
-      if i == 0:
-        sequence.append(random.choice([0, 1]))
-      else:
-        if sequence[i-1] == 1:
-          sequence.append(0)
-        else:
-          sequence.append(random.choice([0, 1]))
-    
-    return sequence
