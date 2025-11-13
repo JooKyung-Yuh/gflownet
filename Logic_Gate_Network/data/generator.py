@@ -1,5 +1,7 @@
 # 규칙을 만족하는 Real 데이터를 생성하는 시스템
 import random
+import datetime
+import csv
 
 class RealDataGenerator:
   """
@@ -38,3 +40,28 @@ class RealDataGenerator:
       raise RuntimeError(f"Failed to generate {count} samples. Only generated {len(samples)} samples after {max_attempts} attempts.")
         
     return samples
+  
+  def save_to_csv(self, samples, filename=None) -> str:
+    """
+    Save samples to CSV file.
+
+    Args:
+        samples: List of samples to save.
+        filename: Optional filename. If None, auto-generates with timestamp.
+
+    Returns:
+        str: Path to the saved CSV file.
+    """
+    if filename is None:
+      filename = datetime.datetime.now().strftime("samples_%Y-%m-%d_%H-%M-%S.csv")
+    
+    with open(filename, 'w', newline='') as csvfile:
+      writer = csv.writer(csvfile)
+      
+      header = [f'bit_{i}' for i in range(len(samples[0]))] # len(samples[0]): 첫 번째 샘플의 길이 (10개), List comprehension으로 ['bit_0', 'bit_1', ..., 'bit_9'] 생성
+      writer.writerow(header) #CSV 첫 줄에 헤더 작성
+      
+      for sample in samples:
+        writer.writerow(sample)
+        
+    return filename
