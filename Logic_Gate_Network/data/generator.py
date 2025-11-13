@@ -1,7 +1,7 @@
 # 규칙을 만족하는 Real 데이터를 생성하는 시스템
-import random
 import datetime
 import csv
+import json
 
 class RealDataGenerator:
   """
@@ -64,4 +64,35 @@ class RealDataGenerator:
       for sample in samples:
         writer.writerow(sample)
         
+    return filename
+  
+  def save_to_json(self, samples, rule, filename=None) -> str:
+    """
+    Save samples to JSON file with metadata.
+
+    Args:
+        samples: List of samples to save.
+        rule: Rule object for metadata extraction.
+        filename: Optional filename. If None, auto-generates with timestamp.
+
+    Returns:
+        str: Path to the saved JSON file.
+    """
+    if filename is None:
+      filename = datetime.datetime.now().strftime("samples_%Y-%m-%d_%H-%M-%S.json")
+    
+    data = {
+      "metadata": {
+        "rule_name": rule.get_name(),
+        "rule_description": rule.get_description(),
+        "dimension": rule.get_dimension(),
+        "generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "sample_count": len(samples)
+      },
+      "samples": samples
+    }
+    
+    with open(filename, 'w') as jsonfile:
+      json.dump(data, jsonfile, indent=2)
+    
     return filename
