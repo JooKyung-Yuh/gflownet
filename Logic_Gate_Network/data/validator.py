@@ -1,3 +1,6 @@
+from Logic_Gate_Network.rules.base import BaseRule
+
+
 class DataValidator:
   """
   DataValidator: Validates the quality of generated Real and Fake datasets.
@@ -7,7 +10,10 @@ class DataValidator:
   - Separation between Real and Fake samples
   - Rule compliance verification
   """
-  def check_no_duplicates_within(self, samples) -> bool:
+  def check_no_duplicates_within(
+    self,
+    samples:list[list[int]]
+    ) -> bool:
     """
     Check if there are any duplicate samples within a single dataset.
 
@@ -27,7 +33,11 @@ class DataValidator:
     return False  
     
   
-  def check_real_fake_separation(self, real_samples, fake_samples) -> bool:
+  def check_real_fake_separation(
+    self,
+    real_samples:list[list[int]],
+    fake_samples:list[list[int]]
+  ) -> bool:
     """
     Check if Real and Fake datasets have no overlapping samples.
 
@@ -55,7 +65,12 @@ class DataValidator:
       return True
     return False
   
-  def check_rule_compliance(self, rule, samples, expected_validity) -> bool:
+  def check_rule_compliance(
+    self,
+    rule:BaseRule,
+    samples:list[list[int]],
+    expected_validity:bool
+    ) -> bool:
     """
     Check if all samples comply with the expected validity status.
 
@@ -74,7 +89,12 @@ class DataValidator:
     
     return True
   
-  def validate_all(self, rule, real_samples, fake_samples) -> bool:
+  def validate_all(
+    self,
+    rule:BaseRule,
+    real_samples:list[list[int]],
+    fake_samples:list[list[int]]
+    ) -> bool:
     """
     Run all validation checks on Real and Fake datasets.
 

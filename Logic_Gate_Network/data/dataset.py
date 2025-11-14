@@ -7,7 +7,11 @@ class LGNDataset:
   This class handles Real and Fake samples, providing methods to split data
   into training and testing sets.
   """
-  def __init__(self, real_samples, fake_samples) -> None:
+  def __init__(
+    self,
+    real_samples:list[list[int]],
+    fake_samples:list[list[int]]
+    ) -> None:
     """
     Initialize LGNDataset with Real and Fake samples.
 
@@ -15,14 +19,17 @@ class LGNDataset:
         real_samples: List of Real (valid) samples.
         fake_samples: List of Fake (invalid) samples.
     """
-    self.real_samples = real_samples
-    self.fake_samples = fake_samples
-    self.train_real = None
-    self.train_fake = None
-    self.test_real = None
-    self.test_fake = None
+    self.real_samples:list[list[int]] = real_samples
+    self.fake_samples:list[list[int]] = fake_samples
+    self.train_real:list[list[int]] | None = None
+    self.train_fake:list[list[int]] | None = None
+    self.test_real:list[list[int]] | None = None
+    self.test_fake:list[list[int]] | None = None
   
-  def split_train_test(self, test_ratio=0.2, random_seed=None):
+  def split_train_test(
+    self,
+    test_ratio: float = 0.2,
+    random_seed: int | None = None) -> None:
     """
     Split Real and Fake samples into training and testing sets.
 
@@ -57,7 +64,7 @@ class LGNDataset:
     self.test_fake = test_fake
     
   
-  def get_train(self):
+  def get_train(self) -> tuple[list[list[int]] | None, list[list[int]] | None]:
     """
     Get training dataset.
 
@@ -66,7 +73,7 @@ class LGNDataset:
     """
     return (self.train_real, self.train_fake)
   
-  def get_test(self):
+  def get_test(self) -> tuple[list[list[int]] | None, list[list[int]] | None]:
     """
     Get testing dataset.
 

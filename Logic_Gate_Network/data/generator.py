@@ -4,6 +4,8 @@ import csv
 import json
 import os
 
+from Logic_Gate_Network.rules.base import BaseRule
+
 class RealDataGenerator:
   """
   RealDataGenerator: Generates samples that satisfy given rules.
@@ -11,7 +13,7 @@ class RealDataGenerator:
   This class creates binary sequences that follow the constraints
   defined by a rule object (e.g., Rule1_NoConsecutive1s).
   """
-  def generate(self, rule, count=500) -> list[list[int]]:
+  def generate(self, rule: BaseRule, count: int = 500) -> list[list[int]]:
     """
     Generate samples that satisfy the given rule.
 
@@ -51,7 +53,7 @@ class FakeDataGenerator:
   This class creates binary sequences that intentionally break the constraints
   defined by a rule object. Ensures no overlap with Real data samples.
   """
-  def generate(self, rule, real_samples, count=500) -> list[list[int]]:
+  def generate(self, rule: BaseRule, real_samples: list[list[int]], count: int = 500) -> list[list[int]]:
     """
     Generate samples that violate the given rule.
 
