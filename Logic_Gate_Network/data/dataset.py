@@ -1,3 +1,5 @@
+import random
+
 class LGNDataset:
   """
   LGNDataset: Manages Logic Gate Network datasets with train/test split functionality.
@@ -31,7 +33,29 @@ class LGNDataset:
     Returns:
         None. Stores train/test splits internally.
     """
-    return
+    if random_seed is not None:
+      random.seed(random_seed)
+      
+    copy_real_samples = self.real_samples.copy()
+    copy_fake_samples = self.fake_samples.copy()
+    
+    random.shuffle(copy_real_samples)
+    random.shuffle(copy_fake_samples)
+    
+    real_split_point = int(len(copy_real_samples) * (1 - test_ratio))
+    train_real = copy_real_samples[:real_split_point]
+    test_real = copy_real_samples[real_split_point:]
+    
+    fake_split_point = int(len(copy_fake_samples) * (1 - test_ratio))
+    train_fake = copy_fake_samples[:fake_split_point]
+    test_fake = copy_fake_samples[fake_split_point:]
+    
+    self.train_real = train_real
+    self.test_real = test_real
+    
+    self.train_fake = train_fake
+    self.test_fake = test_fake
+    
   
   def get_train(self):
     """
@@ -40,7 +64,7 @@ class LGNDataset:
     Returns:
         tuple: (train_real_samples, train_fake_samples)
     """
-    return
+    return (self.train_real, self.train_fake)
   
   def get_test(self):
     """
@@ -49,4 +73,4 @@ class LGNDataset:
     Returns:
         tuple: (test_real_samples, test_fake_samples)
     """
-    return
+    return (self.test_real, self.test_fake)
