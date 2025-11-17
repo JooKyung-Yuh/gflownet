@@ -1,6 +1,8 @@
 from .network import LGNState
 from .gates import GateType, is_valid_arity
 
+from itertools import combinations
+
 class ActionSpace:
   """
   Action Space for Logic Gate Networks (LGN).
@@ -113,8 +115,57 @@ class ActionSpace:
         >>> actions[1]
         {'gate_type': <GateType.OR>, 'inputs': [2, 3]}
     """
-    pass
-  
+    
+    if self.lgn_state.is_terminal():
+      return []  # No actions if terminal state
+    
+    
+    available_indices = self.get_available_inputs()    
+    valid_actions = []
+
+    for gate_type in GateType:
+      # AND gate: variable arity (1 to all available indices)
+      if gate_type == GateType.AND:
+        # Generate all combinations for this arity
+        for arity in range(1, len(available_indices) + 1):
+          for combination in combinations(available_indices, arity):
+            # Convert tuple to list
+            inputs = list(combination)
+            # Validate DAG constraint (no cycles)
+            if self.lgn_state._is_valid_connection(inputs):
+              # Create action dict and add to valid actions
+              action = {
+                "gate_type": gate_type,
+                "inputs": inputs
+              }
+              valid_actions.append(action)
+      
+      # Unary gates (NOT, BUFFER): fixed arity of 1
+      elif gate_type in [GateType.NOT, GateType.BUFFER]:
+        arity = 1
+        for combination in combinations(available_indices, arity):
+          inputs = list(combination)
+          if self.lgn_state._is_valid_connection(inputs):
+            action = {
+                "gate_type": gate_type,
+                "inputs": inputs
+              }
+            valid_actions.append(action)
+      
+      # Binary gates (OR, XOR, NAND, etc.): fixed arity of 2
+      else:
+        arity = 2
+        for combination in combinations(available_indices, arity):
+          inputs = list(combination)
+          if self.lgn_state._is_valid_connection(inputs):
+            action = {
+                "gate_type": gate_type,
+                "inputs": inputs
+              }
+            valid_actions.append(action)
+      
+    return valid_actions
+            
   def is_valid_action(self, action: dict) -> bool:
     """
     Check if a specific action is structurally valid.
