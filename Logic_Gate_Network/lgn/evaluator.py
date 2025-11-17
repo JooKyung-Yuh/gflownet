@@ -1,0 +1,49 @@
+from .gates import apply_gate
+from .network import LGNState
+
+
+class LGNEvaluator:
+    """
+    Evaluator for Logic Gate Networks (LGN).
+    
+    This class performs forward pass evaluation of LGN states on binary inputs,
+    supporting hybrid gate architecture (variadic AND, binary other gates).
+    """
+    def evaluate(self, lgn_state:LGNState, binary_input:list[int]) -> int:
+      """
+      Evaluate Logic Gate Network on a single binary input via forward pass.
+
+      This method executes all gates in the network sequentially, computing outputs
+      by applying gate operations on inputs and previous gate outputs.
+
+      Args:
+          lgn_state (LGNState): The Logic Gate Network structure to evaluate.
+          binary_input (list[int]): Binary input vector (0s and 1s).
+              Length must match lgn_state.num_inputs.
+
+      Returns:
+          int: Final output (0 or 1) from the last gate in the network.
+
+      Raises:
+          AssertionError: If binary_input length doesn't match num_inputs.
+
+      Example:
+          >>> lgn = LGNState(num_inputs=10, max_gates=15)
+          >>> lgn.add_gate(GateType.AND, [0, 1, 2])
+          >>> lgn.add_gate(GateType.OR, [3, 10])
+          >>> evaluator = LGNEvaluator()
+          >>> evaluator.evaluate(lgn, [1,1,1,0,1,0,1,0,1,0])
+          1
+      """
+      assert len(binary_input) == lgn_state.num_inputs  # Validate input dimension matches network configuration
+      
+      outputs = binary_input.copy() # Initialize outputs with inputs (indices 0~num_inputs-1) This list will grow as gates are executed (indices num_inputs~)
+      
+      for gate in lgn_state.gates:  # Execute each gate sequentially in the order they were added
+        input_values = [outputs[idx] for idx in gate.inputs]  # Gather input values from outputs list using gate's input indices
+        result = apply_gate(gate.gate_type, input_values)   # Execute gate operation (handles hybrid arity: variadic AND, binary others)
+        outputs.append(result)  # Append gate output to outputs list (becomes available for subsequent gates)
+      
+      return outputs[-1]  # Return final gate's output as network result
+    
+    
