@@ -46,4 +46,29 @@ class LGNEvaluator:
       
       return outputs[-1]  # Return final gate's output as network result
     
-    
+    def evaluate_batch(self, lgn_state:LGNState, binary_inputs:list[list[int]]) -> list[int]:
+      """
+      Evaluate Logic Gate Network on multiple binary inputs (batch processing).
+
+      This method applies the same LGN to multiple inputs independently,
+      collecting all results for efficient evaluation of datasets.
+
+      Args:
+          lgn_state (LGNState): The Logic Gate Network structure to evaluate.
+          binary_inputs (list[list[int]]): List of binary input vectors.
+              Each input must have length matching lgn_state.num_inputs.
+
+      Returns:
+          list[int]: List of outputs (0 or 1) for each input, in the same order.
+
+      Example:
+          >>> lgn = LGNState(num_inputs=10, max_gates=15)
+          >>> lgn.add_gate(GateType.AND, [0, 1, 2])
+          >>> lgn.add_gate(GateType.OR, [3, 10])
+          >>> evaluator = LGNEvaluator()
+          >>> inputs = [[1,1,1,0,1,0,1,0,1,0], [0,0,0,1,0,1,0,1,0,1]]
+          >>> evaluator.evaluate_batch(lgn, inputs)
+          [1, 1]
+      """
+      output = [self.evaluate(lgn_state, inp) for inp in binary_inputs] # Evaluate each input independently and collect results
+      return output
