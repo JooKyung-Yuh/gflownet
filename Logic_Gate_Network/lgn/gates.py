@@ -5,7 +5,7 @@ class GateType(Enum):
   Enumeration of 16 logic gate types supported in the Logic Gate Network (LGN) system.
   
   This implementation uses a hybrid architecture:
-  - AND gate: Supports variable arity (1 to 5 inputs)
+  - AND gate: Supports variable arity
   - All other 15 gates: Fixed arity (exactly 2 inputs)
   
   Available gate types:
@@ -77,7 +77,7 @@ def is_valid_arity(gate_type: GateType, num_inputs: int) -> bool:
   """
   # Validate input count based on gate type
   if gate_type == GateType.AND:
-    if not (1 <= num_inputs <= 5):
+    if not (1 <= num_inputs):
       return False
   elif gate_type in [GateType.NOT, GateType.BUFFER]:
     if num_inputs != 1:
@@ -117,7 +117,7 @@ def apply_gate(gate_type: GateType, inputs: list[int]) -> int:
   # Validate arity
   if not is_valid_arity(gate_type, len(inputs)):
     if gate_type == GateType.AND:
-      raise ValueError(f"AND gate requires 1-5 inputs, got {len(inputs)}")
+      raise ValueError(f"AND gate requires at least 1 inputs, got {len(inputs)}")
     elif gate_type in [GateType.NOT, GateType.BUFFER]:
       raise ValueError(f"{gate_type.value} gate requires exactly 1 input, got {len(inputs)}")
     else:
