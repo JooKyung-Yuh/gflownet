@@ -128,4 +128,31 @@ class LGNState:
     """
     return len(self.gates)
   
-  
+  def get_features_used(self) -> set[int]:
+    """
+    Get the set of original input features used by the network.
+    
+    This method traverses all gates and collects indices that reference
+    original input features (indices < num_inputs), ignoring gate outputs.
+    
+    Returns:
+        set[int]: Set of input feature indices (0 to num_inputs-1) that are
+                  referenced by at least one gate in the network.
+    
+    Example:
+        >>> lgn = LGNState(num_inputs=10, max_gates=15)
+        >>> lgn.get_features_used()
+        set()
+        >>> lgn.add_gate(GateType.AND, [0, 1, 2])
+        >>> lgn.get_features_used()
+        {0, 1, 2}
+        >>> lgn.add_gate(GateType.OR, [3, 10])  # 10 is gate output, not feature
+        >>> lgn.get_features_used()
+        {0, 1, 2, 3}
+    """
+    features = set()
+    for gate in self.gates:
+      for idx in gate.inputs:
+        if idx < self.num_inputs:  # Only original input features
+          features.add(idx)
+    return features

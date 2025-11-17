@@ -12,13 +12,13 @@ def main():
   
   print("\n2. Generating Real data...")
   real_gen = RealDataGenerator()
-  real_samples = real_gen.generate(rule1, count=10000)
+  real_samples = real_gen.generate(rule1, count=100)
   print(f"Generated {len(real_samples)} Real samples")
   
   
   print("\n3. Generating Fake data...")
   fake_gen = FakeDataGenerator()
-  fake_samples = fake_gen.generate(rule1, real_samples, count=10000)
+  fake_samples = fake_gen.generate(rule1, real_samples, count=100)
   print(f"Generated {len(fake_samples)} Fake samples")
   
   
