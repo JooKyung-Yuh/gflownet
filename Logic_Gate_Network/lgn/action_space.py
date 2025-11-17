@@ -195,4 +195,30 @@ class ActionSpace:
         >>> action_space.is_valid_action({'gate_type': GateType.OR, 'inputs': [0, 50]})
         False
     """
-    pass
+    # Check if action dict has required keys
+    if "gate_type" not in action or "inputs" not in action:
+      return False
+    
+    # Validate gate_type is a valid GateType enum
+    if not isinstance(action["gate_type"], GateType):
+      return False
+    
+    # Extract gate_type and inputs for validation
+    gate_type = action["gate_type"]
+    inputs = action["inputs"]
+    
+    # Validate arity (input count) for gate type
+    if not is_valid_arity(gate_type, len(inputs)):
+      return False
+    
+    # Validate all input indices are available
+    available_indices = self.get_available_inputs()
+    if not all(idx in available_indices for idx in inputs):
+      return False
+      
+    # Validate DAG constraint (no cycles)
+    if not self.lgn_state._is_valid_connection(inputs):
+      return False
+
+    # All validations passed
+    return True
