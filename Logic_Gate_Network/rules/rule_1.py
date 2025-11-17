@@ -4,7 +4,7 @@ class Rule1_NoConsecutive1s(BaseRule):
     """
     Rule 1: No two consecutive 1s are allowed in the input sequence.
     """
-    dimension = 10
+    dimension = 25
     name = "No Consecutive 1s"
     description = "Valid if no two adjacent positions are both 1"
     

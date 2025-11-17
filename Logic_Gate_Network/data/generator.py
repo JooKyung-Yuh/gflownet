@@ -13,13 +13,13 @@ class RealDataGenerator:
   This class creates binary sequences that follow the constraints
   defined by a rule object (e.g., Rule1_NoConsecutive1s).
   """
-  def generate(self, rule: BaseRule, count: int = 500) -> list[list[int]]:
+  def generate(self, rule: BaseRule, count: int = 10000) -> list[list[int]]:
     """
     Generate samples that satisfy the given rule.
 
     Args:
         rule: A BaseRule instance to validate samples.
-        count: Number of samples to generate (default: 500).
+        count: Number of samples to generate (default: 10000).
 
     Returns:
         List of valid samples (each sample is a list of 0s and 1s).
@@ -53,14 +53,14 @@ class FakeDataGenerator:
   This class creates binary sequences that intentionally break the constraints
   defined by a rule object. Ensures no overlap with Real data samples.
   """
-  def generate(self, rule: BaseRule, real_samples: list[list[int]], count: int = 500) -> list[list[int]]:
+  def generate(self, rule: BaseRule, real_samples: list[list[int]], count: int = 10000) -> list[list[int]]:
     """
     Generate samples that violate the given rule.
 
     Args:
         rule: A BaseRule instance to validate samples.
         real_samples: List of Real samples (to avoid overlap).
-        count: Number of samples to generate (default: 500).
+        count: Number of samples to generate (default: 10000).
 
     Returns:
         List of invalid samples (each sample is a list of 0s and 1s).
@@ -88,7 +88,7 @@ class FakeDataGenerator:
 
 
 
-def save_to_csv(samples:list[list[int]], filename=None) -> str:
+def save_to_csv(samples:list[list[int]], label:str, filename=None) -> str:
   """
   Save samples to CSV file.
 
@@ -99,11 +99,11 @@ def save_to_csv(samples:list[list[int]], filename=None) -> str:
   Returns:
       str: Path to the saved CSV file.
   """
-  output_dir = "csv" 
+  output_dir = "Logic_Gate_Network/data/csv" 
   os.makedirs(output_dir, exist_ok=True)
 
   if filename is None:
-    filename = os.path.join(output_dir, datetime.datetime.now().strftime("samples_%Y-%m-%d_%H-%M-%S.csv"))
+    filename = os.path.join(output_dir, datetime.datetime.now().strftime(f"{label}_samples_%Y-%m-%d_%H-%M-%S.csv"))
 
   
   with open(filename, 'w', newline='') as csvfile:
@@ -117,7 +117,7 @@ def save_to_csv(samples:list[list[int]], filename=None) -> str:
       
   return os.path.abspath(filename)
 
-def save_to_json(samples:list[list[int]], rule:BaseRule, filename=None) -> str:
+def save_to_json(samples:list[list[int]], rule:BaseRule, label:str, filename=None) -> str:
   """
   Save samples to JSON file with metadata.
 
@@ -129,11 +129,11 @@ def save_to_json(samples:list[list[int]], rule:BaseRule, filename=None) -> str:
   Returns:
       str: Path to the saved JSON file.
   """
-  output_dir = "json"
+  output_dir = "Logic_Gate_Network/data/json"
   os.makedirs(output_dir, exist_ok=True)
   
   if filename is None:
-    filename = os.path.join(output_dir, datetime.datetime.now().strftime("samples_%Y-%m-%d_%H-%M-%S.json"))
+    filename = os.path.join(output_dir, datetime.datetime.now().strftime(f"{label}_samples_%Y-%m-%d_%H-%M-%S.json"))
   
   data = {
     "metadata": {

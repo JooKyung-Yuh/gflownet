@@ -12,13 +12,13 @@ def main():
   
   print("\n2. Generating Real data...")
   real_gen = RealDataGenerator()
-  real_samples = real_gen.generate(rule1, count=500)
+  real_samples = real_gen.generate(rule1, count=10000)
   print(f"Generated {len(real_samples)} Real samples")
   
   
   print("\n3. Generating Fake data...")
   fake_gen = FakeDataGenerator()
-  fake_samples = fake_gen.generate(rule1, real_samples, count=500)
+  fake_samples = fake_gen.generate(rule1, real_samples, count=10000)
   print(f"Generated {len(fake_samples)} Fake samples")
   
   
@@ -45,10 +45,10 @@ def main():
   
   
   print("\n6. Saving data to files...")
-  real_csv_path = save_to_csv(real_samples)
-  fake_csv_path = save_to_csv(fake_samples)
-  real_json_path = save_to_json(real_samples, rule1)
-  fake_json_path = save_to_json(fake_samples, rule1)
+  real_csv_path = save_to_csv(real_samples, label="real")
+  fake_csv_path = save_to_csv(fake_samples, label="fake")
+  real_json_path = save_to_json(real_samples, rule1, label="real")
+  fake_json_path = save_to_json(fake_samples, rule1, label="fake")
   
   print(f"✓ Real samples saved:")
   print(f"  - CSV: {real_csv_path}")
