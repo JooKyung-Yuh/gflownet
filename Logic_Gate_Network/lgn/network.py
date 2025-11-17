@@ -156,3 +156,65 @@ class LGNState:
         if idx < self.num_inputs:  # Only original input features
           features.add(idx)
     return features
+  
+  def is_terminal(self)->bool:
+    """
+    Check if the network has reached a terminal state.
+    
+    Two-fold termination condition (OR logic):
+    1. All input features are connected to the network
+    2. Maximum number of gates has been reached
+    
+    Returns:
+        bool: True if either termination condition is met, False otherwise.
+    
+    Example:
+        >>> lgn = LGNState(num_inputs=10, max_gates=15)
+        >>> lgn.is_terminal()
+        False
+        >>> # Add gates until all 10 features are used
+        >>> lgn.add_gate(GateType.AND, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+        >>> lgn.is_terminal()
+        True  # Condition 1 met
+        >>> 
+        >>> lgn2 = LGNState(num_inputs=10, max_gates=3)
+        >>> lgn2.add_gate(GateType.AND, [0, 1])
+        >>> lgn2.add_gate(GateType.OR, [2, 10])
+        >>> lgn2.add_gate(GateType.XOR, [3, 11])
+        >>> lgn2.is_terminal()
+        True  # Condition 2 met (3 gates == max_gates)
+    """
+    # Condition 1: All features connected
+    all_features_connected = (len(self.get_features_used()) == self.num_inputs)
+    
+    # Condition 2: Max gates reached
+    max_gates_reached = (len(self.gates) >= self.max_gates)
+    
+    # Terminate if EITHER is true
+    return all_features_connected or max_gates_reached
+    
+  
+  def to_dict(self) -> dict:
+    """
+    Serialize the LGN state to a dictionary for logging and storage.
+    
+    Returns:
+        dict: Dictionary representation with num_inputs, max_gates, and gates.
+              Gates are serialized as (gate_type_string, input_indices) tuples.
+    
+    Example:
+        >>> lgn = LGNState(num_inputs=10, max_gates=15)
+        >>> lgn.add_gate(GateType.AND, [0, 1, 2])
+        >>> lgn.add_gate(GateType.OR, [3, 10])
+        >>> lgn.to_dict()
+        {
+            'num_inputs': 10,
+            'max_gates': 15,
+            'gates': [('AND', [0, 1, 2]), ('OR', [3, 10])]
+        }
+    """
+    return {
+        'num_inputs': self.num_inputs,
+        'max_gates': self.max_gates,
+        'gates': [(gate.gate_type.value, gate.inputs) for gate in self.gates]
+    }
