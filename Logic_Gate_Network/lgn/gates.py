@@ -55,7 +55,37 @@ class GateType(Enum):
   SECOND = "SECOND"
   NFIRST = "NFIRST"
   NSECOND = "NSECOND"
-  
+
+def is_valid_arity(gate_type: GateType, num_inputs: int) -> bool:
+  """
+  Check if the number of inputs is valid for the given gate type.
+
+  Args:
+      gate_type (GateType): The gate type to validate.
+      num_inputs (int): The number of inputs to check.
+
+  Returns:
+      bool: True if the input count is valid for the gate type, False otherwise.
+
+  Example:
+      >>> is_valid_arity(GateType.AND, 3)
+      True
+      >>> is_valid_arity(GateType.OR, 3)
+      False
+      >>> is_valid_arity(GateType.NOT, 1)
+      True
+  """
+  # Validate input count based on gate type
+  if gate_type == GateType.AND:
+    if not (1 <= num_inputs <= 5):
+      return False
+  elif gate_type in [GateType.NOT, GateType.BUFFER]:
+    if num_inputs != 1:
+      return False
+  else:
+    if num_inputs != 2:
+      return False
+  return True
 
 def apply_gate(gate_type: GateType, inputs: list[int]) -> int:
   """
@@ -84,16 +114,13 @@ def apply_gate(gate_type: GateType, inputs: list[int]) -> int:
   if not all(x == 0 or x == 1 for x in inputs):
     raise ValueError("All inputs must be binary (0 or 1)")
   
-  
-  # Validate input count based on gate type
-  if gate_type == GateType.AND:
-    if not (1 <= len(inputs) <= 5):
+  # Validate arity
+  if not is_valid_arity(gate_type, len(inputs)):
+    if gate_type == GateType.AND:
       raise ValueError(f"AND gate requires 1-5 inputs, got {len(inputs)}")
-  elif gate_type in [GateType.NOT, GateType.BUFFER]:
-    if len(inputs) != 1:
+    elif gate_type in [GateType.NOT, GateType.BUFFER]:
       raise ValueError(f"{gate_type.value} gate requires exactly 1 input, got {len(inputs)}")
-  else:
-    if len(inputs) != 2:
+    else:
       raise ValueError(f"{gate_type.value} gate requires exactly 2 inputs, got {len(inputs)}")
   
   
