@@ -88,7 +88,7 @@ class FakeDataGenerator:
 
 
 
-def save_to_csv(samples, filename=None) -> str:
+def save_to_csv(samples:list[list[int]], filename=None) -> str:
   """
   Save samples to CSV file.
 
@@ -117,7 +117,7 @@ def save_to_csv(samples, filename=None) -> str:
       
   return os.path.abspath(filename)
 
-def save_to_json(samples, rule, filename=None) -> str:
+def save_to_json(samples:list[list[int]], rule:BaseRule, filename=None) -> str:
   """
   Save samples to JSON file with metadata.
 

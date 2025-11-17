@@ -8,7 +8,7 @@ class Rule1_NoConsecutive1s(BaseRule):
     name = "No Consecutive 1s"
     description = "Valid if no two adjacent positions are both 1"
     
-    def is_valid(self, sequence):
+    def is_valid(self, sequence:list[int]):
       for i in range(len(sequence) - 1):
           if sequence[i] == 1 and sequence[i + 1] == 1:
               return False

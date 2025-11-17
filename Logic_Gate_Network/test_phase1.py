@@ -15,10 +15,12 @@ def main():
   real_samples = real_gen.generate(rule1, count=500)
   print(f"Generated {len(real_samples)} Real samples")
   
+  
   print("\n3. Generating Fake data...")
   fake_gen = FakeDataGenerator()
   fake_samples = fake_gen.generate(rule1, real_samples, count=500)
   print(f"Generated {len(fake_samples)} Fake samples")
+  
   
   print("\n4. Validating data...")
   validator = DataValidator()
@@ -28,6 +30,7 @@ def main():
   else:
     print("✗ Validation failed!")
     
+  
   print("\n5. Splitting data into train/test...")
   dataset = LGNDataset(real_samples, fake_samples)
   dataset.split_train_test(test_ratio=0.2, random_seed=42)
@@ -39,6 +42,23 @@ def main():
   
   print(f"Train: {len(train_real)} Real + {len(train_fake)} Fake")
   print(f"Test: {len(test_real)} Real + {len(test_fake)} Fake")
+  
+  
+  print("\n6. Saving data to files...")
+  real_csv_path = save_to_csv(real_samples)
+  fake_csv_path = save_to_csv(fake_samples)
+  real_json_path = save_to_json(real_samples, rule1)
+  fake_json_path = save_to_json(fake_samples, rule1)
+  
+  print(f"✓ Real samples saved:")
+  print(f"  - CSV: {real_csv_path}")
+  print(f"  - JSON: {real_json_path}")
+  print(f"✓ Fake samples saved:")
+  print(f"  - CSV: {fake_csv_path}")
+  print(f"  - JSON: {fake_json_path}")
+  
+  
+  
 
 
   
