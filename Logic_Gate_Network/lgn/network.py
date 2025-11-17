@@ -110,3 +110,22 @@ class LGNState:
     """
     max_valid_index = self.num_inputs + len(self.gates) - 1
     return all(0 <= idx <= max_valid_index for idx in input_indices)
+  
+  def get_num_gates(self) -> int:
+    """
+    Get the number of gates currently in the network.
+    
+    Returns:
+        int: The count of gates added to the network.
+    
+    Example:
+        >>> lgn = LGNState(num_inputs=10, max_gates=15)
+        >>> lgn.get_num_gates()
+        0
+        >>> lgn.add_gate(GateType.AND, [0, 1, 2])
+        >>> lgn.get_num_gates()
+        1
+    """
+    return len(self.gates)
+  
+  
