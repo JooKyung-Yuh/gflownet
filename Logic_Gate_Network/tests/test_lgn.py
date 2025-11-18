@@ -202,6 +202,29 @@ def test_lgn_state():
 
   # ====== DAG Validation Tests ======
   lgn_dag = LGNState(num_inputs=5)
+  # Valid connection: references input features only
+  lgn_dag.add_gate(GateType.AND, [0, 1])
+  assert 1 == lgn_dag.get_num_gates()  # Verify gate was added successfully
+  
+  # Valid connection: references input feature 2 and gate 0's output (index 5)
+  lgn_dag.add_gate(GateType.OR, [2, 5])
+  assert 2 == lgn_dag.get_num_gates()  # Verify gate was added successfully
+  
+  # Valid connection: references previous gate outputs (indices 5 and 6)
+  lgn_dag.add_gate(GateType.XOR, [5, 6])
+  assert 3 == lgn_dag.get_num_gates()  # Verify gate was added successfully
+  
+  # Invalid connection: references non-existent gate output (index 10)
+  with pytest.raises(ValueError):
+    lgn_dag.add_gate(GateType.NOT, [10])
+  
+  # Invalid connection: references out-of-range index (index 100)
+  with pytest.raises(ValueError):
+    lgn_dag.add_gate(GateType.AND, [0, 100])
+  
+  
+  # ====== Serialization Tests (to_dict()) ======
+  
 
 def test_evaluator():
   pass
