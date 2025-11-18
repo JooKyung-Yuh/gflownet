@@ -139,9 +139,69 @@ def test_gate_operations():
 
 def test_lgn_state():
   """
+  Test LGNState initialization, gate management, and state tracking.
+
+  This test validates:
+  - Initialization with default and custom parameters
+  - Gate addition and counting
+  - Feature tracking
+  - Terminal state detection
+  - DAG validation
   """
+  # ====== Initialization Tests ======
+  # Default parameters (num_inputs=10, max_gates=15)
+  lgn = LGNState()
+  assert 10 == lgn.num_inputs # Verify default num_inputs
+  assert 15 == lgn.max_gates  # Verify default max_gates
+  assert 0 == lgn.get_num_gates() # Verify empty network
   
-  pass
+  # Custom parameters (num_inputs=5, max_gates=10)
+  lgn2 = LGNState(num_inputs=5, max_gates=10)
+  assert 5 == lgn2.num_inputs
+  assert 10 == lgn2.max_gates
+  assert 0 == lgn2.get_num_gates()
+  
+  # ====== Gate Addition Tests ======
+  # Add first gate (AND gate with inputs [0, 1])
+  lgn.add_gate(GateType.AND, [0, 1])
+  assert 1 == lgn.get_num_gates() # Verify gate count increased to 1
+  # Add second gate (OR gate with inputs [0, 1])
+  lgn.add_gate(GateType.OR, [0, 1])
+  assert 2 == lgn.get_num_gates() # Verify gate count increased to 2
+  # Add third gate (NOT gate with input [1])
+  lgn.add_gate(GateType.NOT, [1])
+  assert 3 == lgn.get_num_gates() # Verify gate count increased to 3
+  
+  
+  # ====== Feature Tracking Tests ======
+  # Create new network for feature tracking
+  lgn_feature_used = LGNState()
+  # Add first gate using input features [0, 1, 2]
+  lgn_feature_used.add_gate(GateType.AND, [0, 1, 2])
+  assert {0, 1, 2} == lgn_feature_used.get_features_used()  # Verify features 0, 1, 2 are tracked
+  
+  # Add second gate using input feature 3 and gate output 10 (index of first gate's output)
+  lgn_feature_used.add_gate(GateType.OR, [3, 10])
+  assert {0, 1, 2, 3} == lgn_feature_used.get_features_used()  # Verify gate output (10) is NOT tracked
+  
+  
+  # ====== Terminal State Tests ======
+  lgn_terminal = LGNState(num_inputs=3, max_gates=5)
+  assert False == lgn_terminal.is_terminal()  # Verify empty network is not terminal
+
+  lgn_terminal.add_gate(GateType.AND, [0, 1, 2])
+  assert True == lgn_terminal.is_terminal() # Verify terminal when all features used
+  
+  # Test Condition 2: Max gates reached
+  lgn_max_gates = LGNState(num_inputs=10, max_gates=2)
+  lgn_max_gates.add_gate(GateType.AND, [0, 1])
+  assert False == lgn_max_gates.is_terminal()  # Not terminal with 1 gate
+  lgn_max_gates.add_gate(GateType.OR, [2, 3])
+  assert True == lgn_max_gates.is_terminal()  # Verify terminal when max gates reached
+
+
+  # ====== DAG Validation Tests ======
+  lgn_dag = LGNState(num_inputs=5)
 
 def test_evaluator():
   pass
