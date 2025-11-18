@@ -104,8 +104,43 @@ def test_gate_operations():
   assert 1 == apply_gate(GateType.AND, [1, 1, 1, 1])
   # Arity 5
   assert 1 == apply_gate(GateType.AND, [1, 1, 1, 1, 1])
+  
+  # ====== Arity Validation Tests ======
+  # AND gate (arity >= 1)
+  assert True == is_valid_arity(GateType.AND, 1)
+  assert True == is_valid_arity(GateType.AND, 3)
+  assert True == is_valid_arity(GateType.AND, 10)
+  assert False == is_valid_arity(GateType.AND, 0)
+  # Unary gates (arity = 1 only)
+  assert True == is_valid_arity(GateType.NOT, 1)
+  assert False == is_valid_arity(GateType.NOT, 2)
+  assert True == is_valid_arity(GateType.BUFFER, 1)
+  assert False == is_valid_arity(GateType.BUFFER, 2)
+  # Binary gates (arity = 2 only)
+  assert True == is_valid_arity(GateType.OR, 2)
+  assert False == is_valid_arity(GateType.OR, 1)
+  assert True == is_valid_arity(GateType.XOR, 2)
+  assert False == is_valid_arity(GateType.XOR, 3)
+  
+  # ====== Edge Cases (Exception Handling) ======
+  # Invalid arity
+  with pytest.raises(ValueError):
+    apply_gate(GateType.NOT, [0, 1])
+
+  with pytest.raises(ValueError):
+    apply_gate(GateType.OR, [0])
+
+  # Invalid input values (non-binary)
+  with pytest.raises(ValueError):
+    apply_gate(GateType.AND, [2])
+
+  with pytest.raises(ValueError):
+    apply_gate(GateType.OR, [0, 5])
 
 def test_lgn_state():
+  """
+  """
+  
   pass
 
 def test_evaluator():
