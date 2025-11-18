@@ -224,7 +224,20 @@ def test_lgn_state():
   
   
   # ====== Serialization Tests (to_dict()) ======
+  lgn_dict = LGNState(num_inputs=3, max_gates=5)
+  dict_empty = lgn_dict.to_dict()
   
+  assert 3 == dict_empty['num_inputs']  # Verify num_inputs is serialized correctly
+  assert 5 == dict_empty['max_gates'] # Verify max_gates is serialized correctly
+  assert [] == dict_empty['gates']  # Verify gates list is empty for empty network
+  
+  lgn_dict.add_gate(GateType.AND, [0, 1])
+  lgn_dict.add_gate(GateType.OR, [1, 3])
+  dict_with_gates = lgn_dict.to_dict()
+  
+  assert 2 == len(dict_with_gates['gates']) # Verify 2 gates are serialized
+  assert ('AND', [0, 1]) == dict_with_gates['gates'][0] # Verify first gate is serialized correctly
+  assert ('OR', [1, 3]) == dict_with_gates['gates'][1]  # Verify second gate is serialized correctly
 
 def test_evaluator():
   pass
