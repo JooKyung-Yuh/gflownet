@@ -70,14 +70,14 @@ Theory:
 -------
 The reward function implements:
 
-  log R(F) = -C∑båÅ: (1-F(X}q~)) - log(|åÅ9 F(X}{≤~) + µ) + ©(F)
+  log R(F) = -C * sum_i (1-F(X_i)) - log(sum_j F(X_j) + epsilon) + Omega(F)
 
 Where:
-  - b (1-F(X}q~)) = Raw count of misclassified Real samples
-  - | F(X}{≤~) = Raw count of accepted Fake samples
-  - ©(F) = -ª ∑ (number of gates)
+  - sum_i (1-F(X_i)) = Raw count of misclassified Real samples
+  - sum_j F(X_j) = Raw count of accepted Fake samples
+  - Omega(F) = -lambda * (number of gates)
   - C = Balance parameter
-  - µ = Numerical stability constant
+  - epsilon = Numerical stability constant
 
 See notion.md and GFlowNet-LogicGates-Final.md for full theoretical derivation.
 """
