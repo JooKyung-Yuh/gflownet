@@ -1,0 +1,259 @@
+# =============================================================================
+# Reward Function Configuration for Logic Gate Network GFlowNet
+# =============================================================================
+#
+# This configuration file contains all hyperparameters for the Reward Function
+# and related components. By externalizing these values, we enable:
+#   1. Easy experimentation with different parameter settings
+#   2. Reproducibility (save config with experiment results)
+#   3. Version control of experimental configurations
+#   4. No code changes needed to tune hyperparameters
+#
+# Usage:
+#   from Logic_Gate_Network.reward.config_loader import load_reward_config
+#
+#   config = load_reward_config("configs/reward_config.yaml")
+#   reward_fn = RewardFunction(
+#       C=config['reward_function']['C'],
+#       epsilon=config['reward_function']['epsilon'],
+#       lambda_complexity=config['reward_function']['lambda_complexity']
+#   )
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Experiment Metadata
+# -----------------------------------------------------------------------------
+# These fields help identify and document experiments
+
+experiment:
+  # Experiment name (used for logging, saving results, etc.)
+  name: "baseline_experiment"
+
+  # Brief description of this configuration
+  description: "Default hyperparameters for baseline GFlowNet training"
+
+  # Random seed for reproducibility
+  # Set to a fixed value (e.g., 42) for reproducible experiments
+  # Set to null to use a random seed
+  seed: 42
+
+  # Version tag (useful for tracking config changes)
+  version: "1.0"
+
+
+# -----------------------------------------------------------------------------
+# Reward Function Hyperparameters
+# -----------------------------------------------------------------------------
+# These parameters control the RewardFunction class behavior
+
+reward_function:
+  # C: Real/Fake balance parameter
+  # ---------------------------------
+  # Controls the weight of the Real data error term relative to Fake data term.
+  #
+  # Formula impact: Real term = -C * (# real errors)
+  #
+  # Higher C ’ Prioritize correctly classifying Real samples
+  # Lower C ’ Prioritize correctly rejecting Fake samples
+  #
+  # Typical range: [0.1, 10.0]
+  # Recommended starting value: 1.0 (equal weight)
+  #
+  # Example values:
+  #   - C = 0.5: Fake rejection is 2x more important than Real accuracy
+  #   - C = 1.0: Equal importance (balanced)
+  #   - C = 2.0: Real accuracy is 2x more important than Fake rejection
+  C: 1.0
+
+
+  # epsilon: Numerical stability constant
+  # ---------------------------------------
+  # Prevents log(0) when computing the Fake data term.
+  #
+  # Formula impact: Fake term = -log(# fake acceptances + epsilon)
+  #
+  # When the LGN perfectly rejects all fake samples (count = 0), epsilon ensures
+  # we compute log(epsilon) instead of log(0) which would be -infinity.
+  #
+  # Should be very small (1e-6 to 1e-10) to minimally affect non-zero counts.
+  # Too large epsilon can artificially inflate rewards for poor performance.
+  # Too small epsilon may cause numerical instability in edge cases.
+  #
+  # Typical range: [1e-10, 1e-6]
+  # Recommended starting value: 1e-6
+  #
+  # Example impact (when fake_acceptance_count = 0):
+  #   - epsilon = 1e-6:  Fake term = -log(1e-6) H -13.8
+  #   - epsilon = 1e-10: Fake term = -log(1e-10) H -23.0
+  epsilon: 1.0e-6
+
+
+  # lambda_complexity: Complexity penalty weight
+  # ----------------------------------------------
+  # Controls how strongly we penalize network complexity (gate count).
+  #
+  # Formula impact: Complexity term = -lambda_complexity * (# gates)
+  #
+  # Higher lambda ’ Strongly prefer simpler networks (fewer gates)
+  # Lower lambda ’ Allow more complex networks for better accuracy
+  # lambda = 0 ’ No complexity penalty (may lead to overfitting)
+  #
+  # Typical range: [0.0, 1.0]
+  # Recommended starting value: 0.1
+  #
+  # Example impact (for a 10-gate network):
+  #   - lambda = 0.0: Complexity term = 0.0 (no penalty)
+  #   - lambda = 0.1: Complexity term = -1.0
+  #   - lambda = 0.5: Complexity term = -5.0
+  #   - lambda = 1.0: Complexity term = -10.0
+  #
+  # Tuning advice:
+  #   - If networks are too large/complex: increase lambda
+  #   - If networks are too simple/underfit: decrease lambda
+  #   - For interpretability: use higher lambda (0.3-1.0)
+  #   - For maximum accuracy: use lower lambda (0.01-0.1)
+  lambda_complexity: 0.1
+
+
+# -----------------------------------------------------------------------------
+# Logic Gate Network (LGN) Configuration
+# -----------------------------------------------------------------------------
+# These parameters control the LGNState initialization
+
+lgn_network:
+  # num_inputs: Number of input features
+  # -------------------------------------
+  # The dimensionality of input binary vectors.
+  # Must match the actual data dimensionality.
+  #
+  # Example: If data samples are [1,0,1,0,1,0,1,0,1,0], then num_inputs = 10
+  #
+  # Typical range: [5, 100]
+  # Default: 10
+  num_inputs: 10
+
+
+  # max_gates: Maximum number of gates allowed
+  # --------------------------------------------
+  # Upper limit on network complexity (DAG size).
+  #
+  # The GFlowNet will terminate trajectory when:
+  #   - All input features are connected, OR
+  #   - max_gates is reached
+  #
+  # Higher max_gates ’ Allow more complex networks (more expressive)
+  # Lower max_gates ’ Force simpler networks (less computation)
+  #
+  # Typical range: [5, 50]
+  # Recommended starting value: 15
+  #
+  # Tuning advice:
+  #   - If networks always hit max_gates limit: increase this value
+  #   - If networks are too large: decrease this value or increase lambda_complexity
+  #   - For quick experiments: use lower values (5-10)
+  #   - For production: use higher values (20-50)
+  max_gates: 15
+
+
+# -----------------------------------------------------------------------------
+# Data Configuration (Optional)
+# -----------------------------------------------------------------------------
+# These parameters are optional but useful for documentation and validation
+
+data:
+  # Expected data sizes (for validation/documentation)
+  # These are NOT enforced, but can be used for logging and sanity checks
+  expected_real_samples: 1000
+  expected_fake_samples: 1000
+
+  # Data source information (for reproducibility)
+  real_data_source: "rule_generator_v1"
+  fake_data_source: "rule_generator_v1"
+
+
+# -----------------------------------------------------------------------------
+# Preset Configurations (Examples)
+# -----------------------------------------------------------------------------
+# Below are example configurations for different use cases.
+# To use a preset, copy its values to the main sections above.
+#
+# Presets:
+# --------
+# 1. baseline: Balanced, default settings (current active config)
+# 2. high_accuracy: Prioritize accuracy over simplicity
+# 3. high_simplicity: Prioritize interpretable, simple networks
+# 4. fast_prototype: Quick experiments with smaller networks
+
+presets:
+  baseline:
+    C: 1.0
+    epsilon: 1.0e-6
+    lambda_complexity: 0.1
+    num_inputs: 10
+    max_gates: 15
+
+  high_accuracy:
+    C: 2.0                    # Prioritize Real accuracy
+    epsilon: 1.0e-10          # More precision
+    lambda_complexity: 0.01   # Allow complex networks
+    num_inputs: 10
+    max_gates: 30             # Allow larger networks
+
+  high_simplicity:
+    C: 1.0
+    epsilon: 1.0e-6
+    lambda_complexity: 0.5    # Strong complexity penalty
+    num_inputs: 10
+    max_gates: 10             # Limit network size
+
+  fast_prototype:
+    C: 1.0
+    epsilon: 1.0e-6
+    lambda_complexity: 0.2
+    num_inputs: 10
+    max_gates: 5              # Very small networks for quick testing
+
+
+# =============================================================================
+# Configuration Notes
+# =============================================================================
+#
+# Parameter Interactions:
+# -----------------------
+# 1. C vs lambda_complexity:
+#    - Both affect the balance between accuracy and simplicity
+#    - C is linear in errors, lambda is linear in gate count
+#    - Adjust together to find optimal accuracy-complexity trade-off
+#
+# 2. epsilon impact:
+#    - Only matters when fake_acceptance_count is very small (< 10)
+#    - Has minimal effect in typical training scenarios
+#    - More important for final evaluation of high-performing networks
+#
+# 3. max_gates vs lambda_complexity:
+#    - max_gates is a hard constraint (absolute limit)
+#    - lambda_complexity is a soft constraint (penalty in reward)
+#    - Use max_gates to prevent runaway network growth
+#    - Use lambda_complexity to guide GFlowNet towards simpler solutions
+#
+# Typical Tuning Workflow:
+# ------------------------
+# 1. Start with baseline configuration
+# 2. Run initial experiments and observe:
+#    - Are networks hitting max_gates limit? ’ Increase max_gates
+#    - Are networks too simple/underfit? ’ Decrease lambda_complexity
+#    - Are networks too complex/overfit? ’ Increase lambda_complexity
+#    - Is Real accuracy too low? ’ Increase C
+#    - Is Fake rejection too low? ’ Decrease C
+# 3. Create new config file for each major experiment
+# 4. Save config file alongside experimental results for reproducibility
+#
+# Version Control:
+# ----------------
+# - Commit this config file to Git
+# - Create separate config files for different experiments
+# - Name configs descriptively: reward_config_exp1.yaml, reward_config_baseline.yaml
+# - Include config file path in experiment logs and results
+#
+# =============================================================================
