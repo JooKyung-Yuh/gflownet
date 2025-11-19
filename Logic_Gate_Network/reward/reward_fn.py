@@ -185,3 +185,60 @@ class RewardFunction:
     error_rate:float =  1 - outputs.count(1)/len(outputs)
     
     return error_rate
+
+  def _compute_fake_acceptance_rate(self, lgn_state:LGNState, fake_data:list[list[int]]) -> float:
+    """
+    Compute the acceptance rate on Fake (rule-violating) data samples.
+    
+    This method evaluates how well the LGN rejects Fake data samples.
+    Fake samples should be classified as 0 (Reject) by the LGN. Any sample
+    classified as 1 (Accept) is counted as an incorrect acceptance.
+    
+    Args:
+        lgn_state (LGNState): 
+            The Logic Gate Network to evaluate.
+        
+        fake_data (list[list[int]]): 
+            List of Fake data samples (rule-violating binary vectors).
+            Each sample is a list of binary values (0s and 1s).
+            All samples should ideally be classified as 0 (Reject).
+    
+    Returns:
+        float: Fake data acceptance rate in range [0.0, 1.0]
+            - 0.0 = Perfect rejection (all Fake samples → 0)
+            - 1.0 = Worst rejection (all Fake samples → 1)
+            - 0.05 = 5% of Fake samples incorrectly accepted
+    
+    Raises:
+        ValueError: If fake_data is empty.
+    
+    Example:
+        >>> lgn = LGNState(num_inputs=10, max_gates=15)
+        >>> lgn.add_gate(GateType.NAND, [0, 1])
+        >>> fake_data = [[1,1,0,0,...], [0,0,1,1,...], ...]  # 1000 samples
+        >>> 
+        >>> reward_fn = RewardFunction()
+        >>> acceptance_rate = reward_fn._compute_fake_acceptance_rate(lgn, fake_data)
+        >>> print(f"Acceptance rate: {acceptance_rate}")  # e.g., 0.03 (3% accepted)
+    
+    Notes:
+        - This is a private helper method (prefix _) used internally by compute_reward().
+        - Acceptance rate = (# samples classified as 1) / (total # samples)
+        - Lower acceptance rate → higher reward in the reward function.
+        - Opposite of Real data: Real wants 1, Fake wants 0.
+    """
+    # Validate input: fake_data must not be empty
+    if not fake_data:
+      raise ValueError("fake_data cannot be empty")
+
+    # Evaluate LGN on all Fake data samples using batch evaluation
+    evaluator = LGNEvaluator()
+    outputs = evaluator.evaluate_batch(lgn_state, fake_data)
+    # outputs: list of LGN predictions [1, 0, 1, 1, 0, ...] for each sample
+    
+    # Count incorrect acceptances (Fake samples should output 0, not 1)
+    # acceptance_rate = (# samples classified as 1) / total
+    #                 = (# incorrectly accepted) / total
+    acceptance_rate:float =  outputs.count(1)/len(outputs)
+    
+    return acceptance_rate
