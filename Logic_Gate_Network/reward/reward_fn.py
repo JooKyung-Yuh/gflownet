@@ -129,3 +129,59 @@ class RewardFunction:
     self.C = C
     self.epsilon = epsilon
     self.lambda_complexity = lambda_complexity
+  
+  def _compute_real_error_rate(self, lgn_state:LGNState, real_data:list[list[int]]) -> float:
+    """
+    Compute the error rate on Real (rule-compliant) data samples.
+    
+    This method evaluates how accurately the LGN classifies Real data samples.
+    Real samples should be classified as 1 (Accept) by the LGN. Any sample
+    classified as 0 (Reject) is counted as a misclassification error.
+    
+    Args:
+        lgn_state (LGNState): 
+            The Logic Gate Network to evaluate.
+        
+        real_data (list[list[int]]): 
+            List of Real data samples (rule-compliant binary vectors).
+            Each sample is a list of binary values (0s and 1s).
+            All samples should ideally be classified as 1 (Accept).
+    
+    Returns:
+        float: Real data error rate in range [0.0, 1.0]
+            - 0.0 = Perfect classification (all Real samples → 1)
+            - 1.0 = Worst classification (all Real samples → 0)
+            - 0.1 = 10% of Real samples misclassified
+    
+    Raises:
+        ValueError: If real_data is empty.
+    
+    Example:
+        >>> lgn = LGNState(num_inputs=10, max_gates=15)
+        >>> lgn.add_gate(GateType.AND, [0, 1, 2])
+        >>> real_data = [[1,0,1,0,...], [0,1,0,1,...], ...]  # 1000 samples
+        >>> 
+        >>> reward_fn = RewardFunction()
+        >>> error_rate = reward_fn._compute_real_error_rate(lgn, real_data)
+        >>> print(f"Error rate: {error_rate}")  # e.g., 0.05 (5% error)
+    
+    Notes:
+        - This is a private helper method (prefix _) used internally by compute_reward().
+        - Error rate = (# samples classified as 0) / (total # samples)
+        - Lower error rate → higher reward in the reward function.
+    """
+    # Validate input: real_data must not be empty
+    if not real_data:
+      raise ValueError("real_data cannot be empty")
+
+    # Evaluate LGN on all Real data samples using batch evaluation
+    evaluator = LGNEvaluator()
+    outputs = evaluator.evaluate_batch(lgn_state, real_data)
+    # outputs: list of LGN predictions [1, 0, 1, 1, 0, ...] for each sample
+    
+    # Count correct classifications (Real samples should output 1)
+    # error_rate = 1 - (# correct / total)
+    #            = (# incorrect / total)
+    error_rate:float =  1 - outputs.count(1)/len(outputs)
+    
+    return error_rate
