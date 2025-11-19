@@ -240,4 +240,55 @@ def test_lgn_state():
   assert ('OR', [1, 3]) == dict_with_gates['gates'][1]  # Verify second gate is serialized correctly
 
 def test_evaluator():
-  pass
+  """
+  Test LGNEvaluator forward pass evaluation.
+
+  This test validates:
+  - Single input evaluation (evaluate method)
+  - Batch input evaluation (evaluate_batch method)
+  - Edge cases (empty network, input dimension mismatch)
+  """
+  # ====== Single Input Evaluation Tests ======
+  lgn_simple = LGNState(num_inputs=3, max_gates=5)
+  lgn_simple.add_gate(GateType.AND, [0, 1, 2])
+  
+  evaluator = LGNEvaluator()
+  
+  assert 1 == evaluator.evaluate(lgn_simple, [1, 1, 1])  # All 1s: AND returns 1
+  assert 0 == evaluator.evaluate(lgn_simple, [1, 1, 0])  # One 0: AND returns 0
+  assert 0 == evaluator.evaluate(lgn_simple, [0, 0, 0])  # All 0s: AND returns 0
+  
+  
+  # Test complex network with multiple gates (chained)
+  lgn_complex = LGNState(num_inputs=3, max_gates=5)
+  lgn_complex.add_gate(GateType.AND, [0, 1])
+  lgn_complex.add_gate(GateType.OR, [2, 3])
+  lgn_complex.add_gate(GateType.NOT, [4])
+
+  # Input [1,0,1]: Gate0=AND(1,0)=0, Gate1=OR(1,0)=1, Gate2=NOT(1)=0
+  result = evaluator.evaluate(lgn_complex, [1, 0, 1])
+  assert 0 == result
+  
+  # Input [1,1,0]: Gate0=AND(1,1)=1, Gate1=OR(0,1)=1, Gate2=NOT(1)=0
+  assert 0 == evaluator.evaluate(lgn_complex, [1, 1, 0])
+  
+  
+  # ====== Batch Evaluation Tests ======
+  batch_inputs = [
+    [1, 0, 1],  # 예상 출력: 0
+    [1, 1, 0],  # 예상 출력: 0
+    [0, 0, 1],  # Input [0,0,1]: Gate0=AND(0,0)=0, Gate1=OR(1,0)=1, Gate2=NOT(1)=0
+  ]
+  
+  batch_result = evaluator.evaluate_batch(lgn_complex, batch_inputs)
+  assert [0, 0, 0] == batch_result  # Verify batch evaluation returns correct outputs for all inputs
+  
+  
+  # ====== Edge Cases Tests ======
+  # Input dimension mismatch: too few inputs
+  with pytest.raises(AssertionError):
+    evaluator.evaluate(lgn_complex, [1, 0])
+  # Input dimension mismatch: too many inputs
+  with pytest.raises(AssertionError):
+    evaluator.evaluate(lgn_complex, [1, 0, 1, 1])
+  
