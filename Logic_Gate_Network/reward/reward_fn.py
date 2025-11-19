@@ -134,7 +134,7 @@ class RewardFunction:
     self.epsilon = epsilon
     self.lambda_complexity = lambda_complexity
   
-  def _compute_real_error_count(self, lgn_state:LGNState, real_data:list[list[int]]) -> int:
+  def compute_real_error_count(self, lgn_state:LGNState, real_data:list[list[int]]) -> int:
     """
     Compute the raw count of errors on Real (rule-compliant) data samples.
 
@@ -169,11 +169,11 @@ class RewardFunction:
         >>> real_data = [[1,0,1,0,...], [0,1,0,1,...], ...]  # 1000 samples
         >>>
         >>> reward_fn = RewardFunction()
-        >>> error_count = reward_fn._compute_real_error_count(lgn, real_data)
+        >>> error_count = reward_fn.compute_real_error_count(lgn, real_data)
         >>> print(f"Error count: {error_count}")  # e.g., 50 (50 errors out of 1000)
 
     Notes:
-        - This is a private helper method (prefix _) used internally by compute_reward().
+        - This is a public helper method that can be used by other modules (e.g., metrics.py).
         - Error count = # samples classified as 0 = N - (# samples classified as 1)
         - Returns RAW COUNT (integer), not normalized rate.
         - Lower error count → higher reward in the reward function.
@@ -194,7 +194,7 @@ class RewardFunction:
 
     return error_count
 
-  def _compute_fake_acceptance_count(self, lgn_state:LGNState, fake_data:list[list[int]]) -> int:
+  def compute_fake_acceptance_count(self, lgn_state:LGNState, fake_data:list[list[int]]) -> int:
     """
     Compute the raw count of accepted Fake (rule-violating) data samples.
 
@@ -229,11 +229,11 @@ class RewardFunction:
         >>> fake_data = [[1,1,0,0,...], [0,0,1,1,...], ...]  # 1000 samples
         >>>
         >>> reward_fn = RewardFunction()
-        >>> acceptance_count = reward_fn._compute_fake_acceptance_count(lgn, fake_data)
+        >>> acceptance_count = reward_fn.compute_fake_acceptance_count(lgn, fake_data)
         >>> print(f"Acceptance count: {acceptance_count}")  # e.g., 30 (30 accepted out of 1000)
 
     Notes:
-        - This is a private helper method (prefix _) used internally by compute_reward().
+        - This is a public helper method that can be used by other modules (e.g., metrics.py).
         - Acceptance count = # samples classified as 1
         - Returns RAW COUNT (integer), not normalized rate.
         - Lower acceptance count → higher reward in the reward function.
@@ -400,8 +400,8 @@ class RewardFunction:
           (dominated by -log(ε) term when fake_acceptance_count = 0)
 
     Implementation Flow:
-        1. Call _compute_real_error_count() to get raw error count
-        2. Call _compute_fake_acceptance_count() to get raw acceptance count
+        1. Call compute_real_error_count() to get raw error count
+        2. Call compute_fake_acceptance_count() to get raw acceptance count
         3. Call _compute_complexity_penalty() to get gate penalty
         4. Compute real_term = -C * error_count
         5. Compute fake_term = -log(acceptance_count + ε)
@@ -415,8 +415,8 @@ class RewardFunction:
         - Epsilon ensures numerical stability when the network perfectly rejects all fakes.
     """
     # Step 1: Compute raw counts using helper methods
-    real_error_count = self._compute_real_error_count(lgn_state, real_data)
-    fake_acceptance_count = self._compute_fake_acceptance_count(lgn_state, fake_data)
+    real_error_count = self.compute_real_error_count(lgn_state, real_data)
+    fake_acceptance_count = self.compute_fake_acceptance_count(lgn_state, fake_data)
     complexity_penalty = self._compute_complexity_penalty(lgn_state)
 
     # Step 2: Compute each term of the reward function
