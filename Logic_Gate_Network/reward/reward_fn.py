@@ -1,6 +1,6 @@
 from  ..lgn import LGNState, LGNEvaluator
 
-import numpy
+import numpy as np
 
 class RewardFunction:
   """
@@ -81,7 +81,7 @@ class RewardFunction:
   References:
   -----------
   - GFlowNet: Bengio et al. (2021) "Flow Network based Generative Models"
-- Reward function design: Critical-Issues-Solutions.md (Option B)
+  - Reward function design: Critical-Issues-Solutions.md (Option B)
   """
   
   def __init__(self, C=1.0, epsilon=1e-6, lambda_complexity=0.1) -> None:
