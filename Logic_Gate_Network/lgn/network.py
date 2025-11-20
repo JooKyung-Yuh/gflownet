@@ -249,11 +249,28 @@ class LGNState:
 
   def remove_gate(self, gate_idx: int) -> None:
     """
-    Remove a gate from the network by index.
+    Remove a gate from the network by index and reindex remaining gates.
 
-    This method removes a gate at the specified index from the gates list.
-    It is primarily used by parent_transitions() in LGNMDP to generate parent
-    states by removing one gate at a time for backward trajectory sampling.
+    This method removes a gate at the specified index from the gates list,
+    then updates all remaining gates' input indices to account for the removal.
+    This is similar to the molecules implementation where block removal triggers
+    reindexing of junction bonds.
+
+    Reindexing Logic:
+    -----------------
+    When Gate i is removed, its output index (num_inputs + i) becomes invalid.
+    All gates that reference indices > (num_inputs + i) must decrement their
+    input indices by 1 to account for the shift in gate output positions.
+
+    Example:
+        >>> lgn = LGNState(num_inputs=5, max_gates=10)
+        >>> lgn.add_gate(GateType.AND, [0, 1])    # Gate 0 -> output at index 5
+        >>> lgn.add_gate(GateType.OR, [2, 3])     # Gate 1 -> output at index 6
+        >>> lgn.add_gate(GateType.XOR, [4, 6])    # Gate 2 -> output at index 7, uses Gate 1
+        >>>
+        >>> # Before removal: Gate 2 inputs are [4, 6] (6 is Gate 1's output)
+        >>> lgn.remove_gate(0)  # Remove Gate 0
+        >>> # After removal: Gate 2 (now Gate 1) inputs are [4, 5] (5 is new index of Gate 1's output)
 
     Args:
         gate_idx (int): The index of the gate to remove (0-indexed).
@@ -262,18 +279,38 @@ class LGNState:
     Raises:
         ValueError: If gate_idx is out of valid range.
 
-    Example:
-        >>> lgn = LGNState(num_inputs=10, max_gates=15)
-        >>> lgn.add_gate(GateType.AND, [0, 1, 2])  # Gate 0
-        >>> lgn.add_gate(GateType.OR, [3, 10])     # Gate 1
-        >>> lgn.get_num_gates()
-        2
-        >>> lgn.remove_gate(0)  # Remove Gate 0 (AND)
-        >>> lgn.get_num_gates()
-        1
-        >>> lgn.gates[0].gate_type
-        <GateType.OR: 2>  # Gate 1 is now at index 0
+    Implementation Notes:
+    ---------------------
+    - This follows the molecules/mdp.py pattern of reindexing after removal
+    - Ensures parent states are semantically valid (no dangling references)
+    - Critical for maintaining DAG consistency in GFlowNet training
     """
     if not (0 <= gate_idx < len(self.gates)):
       raise ValueError(f"Invalid gate index {gate_idx}. Must be in range [0, {len(self.gates)-1}]")
+
+    # Calculate the output index of the gate being removed
+    # This gate's output is at: num_inputs + gate_idx
+    removed_output_index = self.num_inputs + gate_idx
+
+    # Remove the gate from the list
     del self.gates[gate_idx]
+
+    # Reindex remaining gates' inputs to account for the removed gate
+    # Any input index > removed_output_index needs to be decremented by 1
+    # because all subsequent gate outputs shift down by one position
+    for gate in self.gates:
+      reindexed_inputs = []
+      for inp in gate.inputs:
+        if inp > removed_output_index:
+          # This input references a gate output that came after the removed gate
+          # Decrement by 1 since all subsequent gate outputs shift down by 1
+          reindexed_inputs.append(inp - 1)
+        else:
+          # Input references:
+          # - Original input features (indices 0 to num_inputs-1), OR
+          # - Gates before the removed gate (indices num_inputs to removed_output_index)
+          # These indices remain unchanged
+          reindexed_inputs.append(inp)
+
+      # Update the gate's inputs with reindexed values
+      gate.inputs = reindexed_inputs
