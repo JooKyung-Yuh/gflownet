@@ -54,8 +54,8 @@ reward_function:
   #
   # Formula impact: Real term = -C * (# real errors)
   #
-  # Higher C ’ Prioritize correctly classifying Real samples
-  # Lower C ’ Prioritize correctly rejecting Fake samples
+  # Higher C â†’ Prioritize correctly classifying Real samples
+  # Lower C â†’ Prioritize correctly rejecting Fake samples
   #
   # Typical range: [0.1, 10.0]
   # Recommended starting value: 1.0 (equal weight)
@@ -84,8 +84,8 @@ reward_function:
   # Recommended starting value: 1e-6
   #
   # Example impact (when fake_acceptance_count = 0):
-  #   - epsilon = 1e-6:  Fake term = -log(1e-6) H -13.8
-  #   - epsilon = 1e-10: Fake term = -log(1e-10) H -23.0
+  #   - epsilon = 1e-6:  Fake term = -log(1e-6) â‰ˆ -13.8
+  #   - epsilon = 1e-10: Fake term = -log(1e-10) â‰ˆ -23.0
   epsilon: 1.0e-6
 
 
@@ -95,9 +95,9 @@ reward_function:
   #
   # Formula impact: Complexity term = -lambda_complexity * (# gates)
   #
-  # Higher lambda ’ Strongly prefer simpler networks (fewer gates)
-  # Lower lambda ’ Allow more complex networks for better accuracy
-  # lambda = 0 ’ No complexity penalty (may lead to overfitting)
+  # Higher lambda â†’ Strongly prefer simpler networks (fewer gates)
+  # Lower lambda â†’ Allow more complex networks for better accuracy
+  # lambda = 0 â†’ No complexity penalty (may lead to overfitting)
   #
   # Typical range: [0.0, 1.0]
   # Recommended starting value: 0.1
@@ -142,8 +142,8 @@ lgn_network:
   #   - All input features are connected, OR
   #   - max_gates is reached
   #
-  # Higher max_gates ’ Allow more complex networks (more expressive)
-  # Lower max_gates ’ Force simpler networks (less computation)
+  # Higher max_gates â†’ Allow more complex networks (more expressive)
+  # Lower max_gates â†’ Force simpler networks (less computation)
   #
   # Typical range: [5, 50]
   # Recommended starting value: 15
@@ -241,11 +241,11 @@ presets:
 # ------------------------
 # 1. Start with baseline configuration
 # 2. Run initial experiments and observe:
-#    - Are networks hitting max_gates limit? ’ Increase max_gates
-#    - Are networks too simple/underfit? ’ Decrease lambda_complexity
-#    - Are networks too complex/overfit? ’ Increase lambda_complexity
-#    - Is Real accuracy too low? ’ Increase C
-#    - Is Fake rejection too low? ’ Decrease C
+#    - Are networks hitting max_gates limit? â†’ Increase max_gates
+#    - Are networks too simple/underfit? â†’ Decrease lambda_complexity
+#    - Are networks too complex/overfit? â†’ Increase lambda_complexity
+#    - Is Real accuracy too low? â†’ Increase C
+#    - Is Fake rejection too low? â†’ Decrease C
 # 3. Create new config file for each major experiment
 # 4. Save config file alongside experimental results for reproducibility
 #
