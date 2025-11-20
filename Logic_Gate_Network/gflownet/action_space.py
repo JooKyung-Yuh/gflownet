@@ -1,4 +1,5 @@
 from typing import Any
+from itertools import combinations
 from ..lgn.network import LGNState
 from ..lgn.gates import GateType
 
@@ -162,4 +163,144 @@ class LGNActionSpace:
     - DAG constraint: input indices must be < (num_inputs + num_current_gates)
     - Stop action only available if network has at least one gate
     """
-    pass
+    # =========================================================================
+    # Step 1: Max Gates Constraint Check
+    # =========================================================================
+    # Check if the network has reached the maximum number of gates allowed.
+    # This uses the same logic as LGNState.is_terminal() (network.py:191)
+    # to maintain consistency across the codebase.
+    #
+    # Logic: If len(gates) >= max_gates, no more gates can be added.
+    # - If network is non-empty: Only stop action is available
+    # - If network is empty: No actions available (edge case, shouldn't occur)
+    #
+    # Consistency with is_terminal():
+    # - is_terminal() checks: max_gates_reached = (len(self.gates) >= self.max_gates)
+    # - We use identical comparison (>=) to ensure consistent behavior
+    if len(lgn_state.gates) >= self.max_gates:
+      # Network has reached max capacity - can only stop (if non-empty)
+      if len(lgn_state.gates) > 0:
+        # Network has gates: return stop action only
+        return [{'action': 'stop'}]
+      else:
+        # Edge case: empty network at max gates (shouldn't happen in practice)
+        # Cannot add gates (max reached) and cannot stop (network empty)
+        return []
+
+    # =========================================================================
+    # Step 2: Calculate Available Node Indices (DAG Constraint)
+    # =========================================================================
+    # Calculate which node indices can be used as inputs for a new gate.
+    # This enforces the DAG (Directed Acyclic Graph) constraint by ensuring
+    # that new gates can only reference nodes that already exist.
+    #
+    # Available indices structure:
+    # - Indices 0 to (num_inputs - 1): Original input features
+    # - Indices num_inputs to (num_inputs + num_current_gates - 1): Gate outputs
+    #
+    # Example with num_inputs=10, and 2 gates already added:
+    # - Available indices: [0, 1, 2, ..., 9, 10, 11]
+    # - Index 10 = output of gate 0
+    # - Index 11 = output of gate 1
+    #
+    # DAG guarantee: Since we can only reference indices < next_gate_index,
+    # cycles are impossible (would require referencing future gates).
+    num_current_gates = len(lgn_state.gates)
+    next_gate_index = self.num_inputs + num_current_gates
+
+    # All available node indices that can be used as gate inputs
+    # Range: [0, next_gate_index) = [0, num_inputs + num_current_gates)
+    available_indices = list(range(next_gate_index))
+
+    # =========================================================================
+    # Step 3: Generate All Valid Gate Addition Actions
+    # =========================================================================
+    # For each gate type, generate all valid input combinations that satisfy:
+    # 1. Arity constraint: correct number of inputs for the gate type
+    # 2. DAG constraint: all inputs reference existing nodes (already satisfied)
+    #
+    # Gate types by arity:
+    # - 1-input gates: NOT, BUFFER (unary operations)
+    # - 2-input gates: 13 gate types (binary operations, excluding AND)
+    # - Variable-arity gates: AND (1+ inputs, all possible combinations)
+    #
+    # AND gate special handling:
+    # - Supports 1, 2, 3, ..., n inputs where n = len(available_indices)
+    # - This provides maximum expressiveness for logic gate networks
+    # - Example: With 10 available indices, AND can have C(10,1) + C(10,2) + ... + C(10,10) = 1023 combinations
+
+    actions = []
+
+    # Define gate types by arity for organized generation
+    # Unary gates: Require exactly 1 input
+    unary_gates = [GateType.NOT, GateType.BUFFER]
+
+    # Binary gates: Require exactly 2 inputs (AND excluded - handled separately)
+    binary_gates = [
+        GateType.OR, GateType.XOR,
+        GateType.NAND, GateType.NOR, GateType.XNOR,
+        GateType.IMPLY, GateType.NIMPLY,
+        GateType.CONVERSE_IMPLY, GateType.CONVERSE_NIMPLY,
+        GateType.FIRST, GateType.SECOND,
+        GateType.NFIRST, GateType.NSECOND
+    ]
+
+    # Generate actions for 1-input gates (NOT, BUFFER)
+    # For each unary gate type, create action for each available index
+    for gate_type in unary_gates:
+        for idx in available_indices:
+            action = {
+                'gate_type': gate_type,
+                'input_indices': (idx,)  # Single-element tuple
+            }
+            actions.append(action)
+
+    # Generate actions for 2-input gates (13 types, excluding AND)
+    # For each binary gate type, create action for each 2-combination of indices
+    # combinations(available_indices, 2) generates all unordered pairs
+    # This ensures we don't generate duplicate actions like (0,1) and (1,0)
+    for gate_type in binary_gates:
+        for input_pair in combinations(available_indices, 2):
+            action = {
+                'gate_type': gate_type,
+                'input_indices': input_pair  # Tuple of (idx1, idx2) where idx1 < idx2
+            }
+            actions.append(action)
+
+    # Generate actions for variable-arity AND gate (1+ inputs)
+    # AND gate is unique: it supports any number of inputs >= 1
+    # We generate ALL possible combinations from size 1 to size len(available_indices)
+    #
+    # Mathematical note:
+    # - Total AND actions = C(n,1) + C(n,2) + ... + C(n,n) = 2^n - 1
+    # - Example with n=10: 1023 different AND gate configurations
+    #
+    # This provides maximum expressiveness but increases action space size.
+    # Trade-off: Larger action space vs. more expressive logic networks.
+    num_available = len(available_indices)
+    for arity in range(1, num_available + 1):
+        # For each arity (1, 2, 3, ..., num_available)
+        # Generate all combinations of that size
+        for input_combination in combinations(available_indices, arity):
+            action = {
+                'gate_type': GateType.AND,
+                'input_indices': input_combination  # Tuple of indices (sorted)
+            }
+            actions.append(action)
+
+    # =========================================================================
+    # Step 4: Add Stop Action (if network is non-empty)
+    # =========================================================================
+    # The stop action allows the policy to terminate trajectory generation
+    # and evaluate the current network. It is only available if:
+    # - The network has at least one gate (non-empty)
+    #
+    # Rationale: Cannot evaluate an empty network (no computation to perform).
+    # This matches the behavior in LGNMDP.parent_transitions() where stop
+    # action creates a parent-child relationship with the same state.
+    if num_current_gates > 0:
+        # Network is non-empty: add stop action
+        actions.append({'action': 'stop'})
+
+    # Return all valid actions (gate additions + optional stop)
+    return actions
