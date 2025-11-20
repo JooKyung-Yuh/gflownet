@@ -223,4 +223,57 @@ class LGNMDP:
     - GateType: Enum defining logic gate types
     - Trajectory Balance loss: Uses this method for backward sampling
     """
-    pass
+    # Case 1: Terminal state reached via stop action
+    # ------------------------------------------------
+    # If the current state was reached by taking a "stop" action,
+    # then the parent is the same state without the stop action.
+    # This represents the backward transition: parent_state --[stop]--> current_state
+    if used_stop_action:
+      # The parent state is identical to the current state (before stop was taken)
+      parent = lgn_state.copy()
+      # The action that was taken from parent to reach here is "stop"
+      action = {'action': 'stop'}
+      # Return single parent and single action
+      return [parent], [action]
+
+    # Case 2: Empty LGN (initial state)
+    # ----------------------------------
+    # If the current state has no gates, it's the initial state.
+    # The initial state has no parent states (there's nothing before it).
+    if len(lgn_state.gates) == 0:
+      # No parents exist for the initial state
+      return [], []
+
+    # Case 3: Normal case - generate parent states by gate removal
+    # -------------------------------------------------------------
+    # For each gate in the current state, we can create a parent state
+    # by removing that gate. This represents: parent_state --[add gate]--> current_state
+    # In backward view: we ask "which gate was added last to reach here?"
+
+    # Initialize lists to store parent states and corresponding actions
+    parents = []
+    actions = []
+
+    # Iterate through each gate in the current state
+    for gate_idx in range(len(lgn_state.gates)):
+      # Get the gate that will be removed to create the parent state
+      gate = lgn_state.gates[gate_idx]
+
+      # Create a parent state by copying current state and removing this gate
+      parent = lgn_state.copy()  # Deep copy to ensure independence
+      parent.remove_gate(gate_idx)  # Remove the gate at this index
+
+      # Record the action: the gate that was added from parent to reach current state
+      # This contains all information needed to reconstruct the forward transition
+      action = {
+        'gate_type': gate.gate_type,  # Type of gate (AND, OR, etc.)
+        'input_indices': tuple(gate.inputs)  # Input indices as tuple (immutable)
+      }
+
+      # Add this parent-action pair to our lists
+      parents.append(parent)
+      actions.append(action)
+
+    # Return all parent states and their corresponding actions
+    # The order doesn't matter for GFlowNet (flow matching is order-agnostic)
+    return parents, actions
