@@ -197,11 +197,11 @@ class LGNState:
   def to_dict(self) -> dict:
     """
     Serialize the LGN state to a dictionary for logging and storage.
-    
+
     Returns:
         dict: Dictionary representation with num_inputs, max_gates, and gates.
               Gates are serialized as (gate_type_string, input_indices) tuples.
-    
+
     Example:
         >>> lgn = LGNState(num_inputs=10, max_gates=15)
         >>> lgn.add_gate(GateType.AND, [0, 1, 2])
@@ -218,3 +218,62 @@ class LGNState:
         'max_gates': self.max_gates,
         'gates': [(gate.gate_type.value, gate.inputs) for gate in self.gates]
     }
+
+  def copy(self) -> 'LGNState':
+    """
+    Create a deep copy of the LGNState.
+
+    This method creates a completely independent duplicate of the current state.
+    Modifying the copy will not affect the original state, and vice versa.
+    This is essential for parent_transitions() in LGNMDP, where we need to
+    create parent states by removing gates without modifying the original.
+
+    Returns:
+        LGNState: A new LGNState instance with the same configuration and gates.
+
+    Example:
+        >>> lgn = LGNState(num_inputs=10, max_gates=15)
+        >>> lgn.add_gate(GateType.AND, [0, 1, 2])
+        >>> copy = lgn.copy()
+        >>> copy.add_gate(GateType.OR, [3, 10])  # Original unchanged
+        >>> lgn.get_num_gates()
+        1  # Original has 1 gate
+        >>> copy.get_num_gates()
+        2  # Copy has 2 gates
+    """
+    new_lgn = LGNState(num_inputs=self.num_inputs, max_gates=self.max_gates)
+    # Deep copy each gate
+    for gate in self.gates:
+      new_lgn.gates.append(Gate(gate.gate_type, gate.inputs.copy()))
+    return new_lgn
+
+  def remove_gate(self, gate_idx: int) -> None:
+    """
+    Remove a gate from the network by index.
+
+    This method removes a gate at the specified index from the gates list.
+    It is primarily used by parent_transitions() in LGNMDP to generate parent
+    states by removing one gate at a time for backward trajectory sampling.
+
+    Args:
+        gate_idx (int): The index of the gate to remove (0-indexed).
+            Must be within range [0, len(gates)-1].
+
+    Raises:
+        ValueError: If gate_idx is out of valid range.
+
+    Example:
+        >>> lgn = LGNState(num_inputs=10, max_gates=15)
+        >>> lgn.add_gate(GateType.AND, [0, 1, 2])  # Gate 0
+        >>> lgn.add_gate(GateType.OR, [3, 10])     # Gate 1
+        >>> lgn.get_num_gates()
+        2
+        >>> lgn.remove_gate(0)  # Remove Gate 0 (AND)
+        >>> lgn.get_num_gates()
+        1
+        >>> lgn.gates[0].gate_type
+        <GateType.OR: 2>  # Gate 1 is now at index 0
+    """
+    if not (0 <= gate_idx < len(self.gates)):
+      raise ValueError(f"Invalid gate index {gate_idx}. Must be in range [0, {len(self.gates)-1}]")
+    del self.gates[gate_idx]
