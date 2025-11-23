@@ -1,5 +1,5 @@
 import pytest
-from ..lgn import GateType, LGNState, LGNEvaluator, apply_gate, is_valid_arity
+from lgn import GateType, LGNState, LGNEvaluator, apply_gate, is_valid_arity
 
 def test_gate_operations():
   """

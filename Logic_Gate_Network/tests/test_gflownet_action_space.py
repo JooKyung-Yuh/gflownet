@@ -1,6 +1,6 @@
 import pytest
-from ..gflownet import LGNActionSpace
-from ..lgn import LGNState, GateType
+from gflownet import LGNActionSpace
+from lgn import LGNState, GateType
 
 
 def test_action_space_initialization():
@@ -466,7 +466,7 @@ def test_get_valid_actions_consistency_with_mdp():
   - Both use {'gate_type': GateType, 'input_indices': tuple} format
   """
   # Setup: Create action space and MDP
-  from ..gflownet import LGNMDP
+  from gflownet import LGNMDP
 
   action_space = LGNActionSpace(num_inputs=3, max_gates=10)
   mdp = LGNMDP(num_inputs=3, max_gates=10)

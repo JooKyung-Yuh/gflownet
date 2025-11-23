@@ -1,7 +1,7 @@
 import pytest
 import random
-from ..gflownet import LGNMDP, LGNActionSpace
-from ..lgn import LGNState, GateType
+from gflownet import LGNMDP, LGNActionSpace
+from lgn import LGNState, GateType
 
 
 def test_forward_backward_consistency_simple():

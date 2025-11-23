@@ -1,6 +1,6 @@
 import pytest
-from ..gflownet import LGNMDP
-from ..lgn import LGNState, GateType
+from gflownet import LGNMDP
+from lgn import LGNState, GateType
 
 
 def test_lgn_mdp_initialization():

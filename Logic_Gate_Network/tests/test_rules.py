@@ -1,6 +1,6 @@
 import pytest # Python 테스트 프레임워크
-from ..rules import Rule1_NoConsecutive1s
-from ..rules import RuleChecker
+from rules import Rule1_NoConsecutive1s
+from rules import RuleChecker
 
 def test_rule1_valid_cases():
   rule1 = Rule1_NoConsecutive1s()

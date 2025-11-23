@@ -16,8 +16,8 @@ Key behaviors verified:
 """
 
 import pytest
-from ..gflownet import LGNMDP, LGNActionSpace
-from ..lgn import LGNState, GateType
+from gflownet import LGNMDP, LGNActionSpace
+from lgn import LGNState, GateType
 
 
 def test_parent_transitions_with_dependencies():

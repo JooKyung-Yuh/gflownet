@@ -1,5 +1,5 @@
 import pytest
-from ..lgn import GateType, LGNState, ActionSpace
+from lgn import GateType, LGNState, ActionSpace
 
 def test_get_available_inputs():
   """

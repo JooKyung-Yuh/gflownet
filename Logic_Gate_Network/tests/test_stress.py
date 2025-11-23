@@ -14,8 +14,8 @@ import pytest
 import random
 import time
 from collections import defaultdict
-from ..gflownet import LGNMDP, LGNActionSpace
-from ..lgn import LGNState, GateType
+from gflownet import LGNMDP, LGNActionSpace
+from lgn import LGNState, GateType
 
 
 def test_large_scale_trajectory_generation():
