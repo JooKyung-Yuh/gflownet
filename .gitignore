@@ -1,8 +1,6 @@
-# Discussion and planning documents (existing)
-Critical-Issues-Solutions.md
-GFlowNet-LogicGates-Final.md
-IMPLEMENTATION_PLAN.md
-IMPLEMENTATION_PLAN_v5.md
+# Documentation files (excluding README.md)
+Logic_Gate_Network/*.md
+!Logic_Gate_Network/README.md
 
 # Personal notes and discussion files (patterns)
 *_DISCUSSION.md
