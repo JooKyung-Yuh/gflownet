@@ -1,4 +1,4 @@
-from  ..lgn import LGNState, LGNEvaluator
+from lgn import LGNState, LGNEvaluator
 
 import numpy as np
 

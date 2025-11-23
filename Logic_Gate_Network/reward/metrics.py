@@ -34,7 +34,7 @@ Usage:
 >>> print(f"Real Accuracy: {accuracy:.2%}")  # e.g., 95.00%
 """
 
-from ..lgn import LGNState
+from lgn import LGNState
 from .reward_fn import RewardFunction
 
 
