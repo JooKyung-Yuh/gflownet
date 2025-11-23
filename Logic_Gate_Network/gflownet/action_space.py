@@ -1,7 +1,7 @@
 from typing import Any
 from itertools import combinations
-from ..lgn.network import LGNState
-from ..lgn.gates import GateType
+from lgn.network import LGNState
+from lgn.gates import GateType
 
 class LGNActionSpace:
   """

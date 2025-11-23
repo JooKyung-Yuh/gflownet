@@ -25,10 +25,9 @@ Architecture follows molecules' pattern but uses simpler MLP (like grid) instead
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import List, Dict, Any, Tuple
-from ..lgn.network import LGNState
-from ..lgn.gates import GateType
+from typing import List, Dict, Any, Tuple, Optional
+from lgn.network import LGNState
+from lgn.gates import GateType, GATE_TYPE_TO_IDX
 
 
 def make_mlp(layer_sizes: List[int], activation=nn.LeakyReLU(), final_activation=False):
@@ -177,7 +176,7 @@ class LGNPolicyNetwork(nn.Module):
         # Gate types: One-hot encoding (max_gates * 16)
         gate_types = torch.zeros(self.max_gates, 16, dtype=torch.float32, device=device)
         for i, gate in enumerate(lgn.gates):
-            gate_type_idx = gate.gate_type.value
+            gate_type_idx = GATE_TYPE_TO_IDX[gate.gate_type]
             gate_types[i, gate_type_idx] = 1.0
         gate_types_flat = gate_types.flatten()
 
@@ -217,10 +216,13 @@ class LGNPolicyNetwork(nn.Module):
         torch.Tensor
             Action encoding tensor of shape (action_dim,)
         """
+        # Type narrowing: action must be a gate action
+        assert 'gate_type' in action and 'input_indices' in action
+
         device = next(self.parameters()).device
 
         # Gate type: One-hot encoding
-        gate_type_idx = action['gate_type'].value
+        gate_type_idx = GATE_TYPE_TO_IDX[action['gate_type']]
         gate_type_onehot = torch.zeros(16, dtype=torch.float32, device=device)
         gate_type_onehot[gate_type_idx] = 1.0
 
@@ -385,3 +387,33 @@ class LGNPolicyNetwork(nn.Module):
             exp_stop_q = torch.tensor(0.0, device=state_emb.device)
 
         return exp_gate_q + exp_stop_q
+
+    def forward_policy(
+        self,
+        lgn: LGNState,
+        gate_actions: List[Dict[str, Any]],
+        device: Optional[torch.device] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass compatible with training loop interface.
+
+        This method matches the GNN policy interface for compatibility
+        with the training code.
+
+        Parameters:
+        -----------
+        lgn : LGNState
+            Current state
+        gate_actions : List[Dict[str, Any]]
+            List of gate addition actions (no stop action)
+        device : torch.device
+            Device to run on (ignored, uses model device)
+
+        Returns:
+        --------
+        Tuple[torch.Tensor, torch.Tensor]
+            - action_q: Q-values for gate actions [num_gate_actions]
+            - stop_q: Q-value for stop action (scalar)
+        """
+        # Use forward method which already does this
+        return self.forward(lgn, gate_actions)

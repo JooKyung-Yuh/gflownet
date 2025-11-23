@@ -23,10 +23,11 @@ Based on molecules/gflownet.py training loop, adapted for LGN's structure.
 """
 
 import torch
-from typing import Dict, Any, List, Tuple, Callable
+from typing import Dict, Any, List, Tuple, Callable, Union
 import time
-from ..lgn.network import LGNState
+from lgn.network import LGNState
 from .policy_network import LGNPolicyNetwork
+from .policy_network_gnn import LGNGNNPolicy
 from .lgn_mdp import LGNMDP
 from .action_space import LGNActionSpace
 
@@ -90,7 +91,7 @@ class LGNTrainer:
 
     def __init__(
         self,
-        policy: LGNPolicyNetwork,
+        policy: Union[LGNPolicyNetwork, LGNGNNPolicy],
         mdp: LGNMDP,
         action_space: LGNActionSpace,
         reward_fn: Callable[[LGNState], float],
@@ -162,7 +163,7 @@ class LGNTrainer:
                 gate_actions = [a for a in actions if 'gate_type' in a]
 
                 # Compute Q-values
-                action_q, stop_q = self.policy.forward(lgn, gate_actions)
+                action_q, stop_q = self.policy.forward_policy(lgn, gate_actions)
 
                 # Combine Q-values for sampling
                 if len(gate_actions) > 0:
@@ -174,9 +175,18 @@ class LGNTrainer:
                     all_actions = [{'action': 'stop'}]
 
                 # Sample action using Boltzmann distribution: P(a) proportional to exp(Q(s,a))
+                # Use cumulative distribution method to avoid multinomial's 2^24 category limit
                 logits = all_q_values
                 probs = torch.softmax(logits, dim=0)
-                action_idx = int(torch.multinomial(probs, 1).item())
+
+                # Cumulative distribution sampling (avoids multinomial limit)
+                cumsum = torch.cumsum(probs, dim=0)
+                u = torch.rand(1, device=probs.device)
+                action_idx = int(torch.searchsorted(cumsum, u).item())
+
+                # Clamp to valid range (searchsorted can return len(cumsum) if u >= cumsum[-1])
+                action_idx = min(action_idx, len(all_actions) - 1)
+
                 sampled_action = all_actions[action_idx]
 
                 # Check if stop action
@@ -201,6 +211,9 @@ class LGNTrainer:
                     break
                 else:
                     # Non-terminal transition: gate addition
+                    # Type narrowing: sampled_action is a gate action
+                    assert 'gate_type' in sampled_action and 'input_indices' in sampled_action
+
                     # Apply action to get next state
                     lgn.add_gate(sampled_action['gate_type'], sampled_action['input_indices'])
 
@@ -471,7 +484,20 @@ class LGNTrainer:
         start_time = time.time()
 
         for i in range(num_iterations):
+            iter_start = time.time()
+
+            # Show real-time progress on same line
+            if verbose:
+                progress_pct = (i / num_iterations) * 100
+                bar_length = 30
+                filled = int(bar_length * i / num_iterations)
+                bar = '█' * filled + '░' * (bar_length - filled)
+                print(f"\r  [{bar}] {i}/{num_iterations} ({progress_pct:.1f}%) - Sampling trajectories...",
+                      end='', flush=True)
+
             loss, metrics = self.train_step(batch_size)
+
+            iter_time = time.time() - iter_start
 
             # Log metrics
             all_metrics['loss'].append(metrics['loss'])
@@ -486,11 +512,17 @@ class LGNTrainer:
                 iter_term = metrics['term_loss']
                 iter_flow = metrics['flow_loss']
                 iter_reward = metrics['mean_reward']
-                print(f"Step {i}/{num_iterations} | "
+                # Clear the progress line and print full metrics
+                print(f"\r  Step {i+1}/{num_iterations} | "
                       f"Loss: {iter_loss:.4f} | "
                       f"Term: {iter_term:.4f} | "
                       f"Flow: {iter_flow:.4f} | "
                       f"Reward: {iter_reward:.4f} | "
-                      f"Time: {elapsed:.1f}s")
+                      f"Iter: {iter_time:.1f}s | "
+                      f"Total: {elapsed:.1f}s")
+
+        # Final newline
+        if verbose:
+            print()
 
         return all_metrics
