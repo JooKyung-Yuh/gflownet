@@ -66,3 +66,6 @@ Logic_Gate_Network/data/csv/*
 Logic_Gate_Network/data/json/*
 csv/*
 json/*
+
+# Experiments
+Logic_Gate_Network/experiments/
