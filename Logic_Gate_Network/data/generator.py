@@ -1,10 +1,10 @@
-# 규칙을 만족하는 Real 데이터를 생성하는 시스템
+# Data generation system for Real/Fake samples
 import datetime
 import csv
 import json
 import os
 
-from Logic_Gate_Network.rules.base import BaseRule
+from rules.base import BaseRule
 
 class RealDataGenerator:
   """
@@ -28,15 +28,15 @@ class RealDataGenerator:
         RuntimeError: If unable to generate enough samples.
     """
     samples = []
-    max_attempts = count * 100 # 시도 횟수
+    max_attempts = count * 100  # Maximum number of attempts
     attempts = 0
     
-    while len(samples) < count and attempts < max_attempts: # 샘플이 충분히 모이면 (len(samples) >= count) 루프 종료, 또는 시도 횟수 초과하면 (attempts >= max_attempts) 루프 종료
+    while len(samples) < count and attempts < max_attempts:
       attempts += 1
-      
+
       sample = rule.generate_candidate()
-      if rule.is_valid(sample):                              # valid 한지 확인
-        if tuple(sample) not in {tuple(s) for s in samples}: # 중복방지
+      if rule.is_valid(sample):
+        if tuple(sample) not in {tuple(s) for s in samples}:  # Avoid duplicates
           samples.append(sample)
       
     if len(samples) < count:
@@ -68,12 +68,12 @@ class FakeDataGenerator:
     Raises:
         RuntimeError: If unable to generate enough samples.
     """
-    samples = [] # Fake 샘플 저장용
-    real_set = {tuple(s) for s in real_samples} # Real 데이터를 set으로 변환 (O(1) 검색)
-    max_attempts = count * 100 # 최대 시도 횟수
+    samples = []  # Storage for fake samples
+    real_set = {tuple(s) for s in real_samples}  # Convert to set for O(1) lookup
+    max_attempts = count * 100  # Maximum number of attempts
     attempts = 0
     
-    while len(samples) < count and attempts < max_attempts: # 샘플이 충분히 모이면 (len(samples) >= count) 루프 종료, 또는 시도 횟수 초과하면 (attempts >= max_attempts) 루프 종료
+    while len(samples) < count and attempts < max_attempts:
       sample = rule.generate_violating_candidate()
       if not rule.is_valid(sample):
         sample_tuple = tuple(sample)
@@ -109,8 +109,8 @@ def save_to_csv(samples:list[list[int]], label:str, filename=None) -> str:
   with open(filename, 'w', newline='') as csvfile:
     writer = csv.writer(csvfile)
     
-    header = [f'bit_{i}' for i in range(len(samples[0]))] # len(samples[0]): 첫 번째 샘플의 길이 (10개), List comprehension으로 ['bit_0', 'bit_1', ..., 'bit_9'] 생성
-    writer.writerow(header) #CSV 첫 줄에 헤더 작성
+    header = [f'bit_{i}' for i in range(len(samples[0]))]  # Create header row
+    writer.writerow(header)  # Write header to CSV
     
     for sample in samples:
       writer.writerow(sample)

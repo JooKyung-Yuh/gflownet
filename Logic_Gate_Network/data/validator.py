@@ -1,4 +1,4 @@
-from Logic_Gate_Network.rules.base import BaseRule
+from rules.base import BaseRule
 
 
 class DataValidator:
