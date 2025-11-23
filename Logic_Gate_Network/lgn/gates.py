@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import Enum, IntEnum
 
 class GateType(Enum):
   """
@@ -163,4 +163,47 @@ def apply_gate(gate_type: GateType, inputs: list[int]) -> int:
     return 1 - inputs[0]
   elif gate_type == GateType.NSECOND:
     return 1 - inputs[1]
-  
+
+
+# Centralized gate type to integer index mapping
+# This is the SINGLE SOURCE OF TRUTH for gate type indexing
+# Use this mapping in all neural network code (policy networks, embeddings, etc.)
+GATE_TYPE_TO_IDX = {
+    GateType.AND: 0,
+    GateType.OR: 1,
+    GateType.XOR: 2,
+    GateType.NAND: 3,
+    GateType.NOR: 4,
+    GateType.XNOR: 5,
+    GateType.NOT: 6,
+    GateType.BUFFER: 7,
+    GateType.IMPLY: 8,
+    GateType.NIMPLY: 9,
+    GateType.CONVERSE_IMPLY: 10,
+    GateType.CONVERSE_NIMPLY: 11,
+    GateType.FIRST: 12,
+    GateType.SECOND: 13,
+    GateType.NFIRST: 14,
+    GateType.NSECOND: 15,
+}
+
+
+def get_gate_type_index(gate_type: GateType) -> int:
+    """
+    Get the integer index (0-15) for a gate type.
+
+    This is used for tensor indexing in neural networks.
+
+    Args:
+        gate_type: The GateType enum value
+
+    Returns:
+        int: Index from 0 to 15
+
+    Example:
+        >>> get_gate_type_index(GateType.AND)
+        0
+        >>> get_gate_type_index(GateType.OR)
+        1
+    """
+    return GATE_TYPE_TO_IDX[gate_type]

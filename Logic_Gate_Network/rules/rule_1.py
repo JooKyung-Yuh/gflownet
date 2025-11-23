@@ -1,13 +1,18 @@
 from .base import BaseRule
 import random
+
 class Rule1_NoConsecutive1s(BaseRule):
     """
     Rule 1: No two consecutive 1s are allowed in the input sequence.
+
+    Args:
+        dimension: Input sequence dimension (default: 10)
     """
-    dimension = 10
-    name = "No Consecutive 1s"
-    description = "Valid if no two adjacent positions are both 1"
-    
+    def __init__(self, dimension: int = 10):
+        self.dimension = dimension
+        self.name = "No Consecutive 1s"
+        self.description = "Valid if no two adjacent positions are both 1"
+
     def is_valid(self, sequence:list[int]):
       for i in range(len(sequence) - 1):
           if sequence[i] == 1 and sequence[i + 1] == 1:

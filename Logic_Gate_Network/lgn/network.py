@@ -244,7 +244,9 @@ class LGNState:
     new_lgn = LGNState(num_inputs=self.num_inputs, max_gates=self.max_gates)
     # Deep copy each gate
     for gate in self.gates:
-      new_lgn.gates.append(Gate(gate.gate_type, gate.inputs.copy()))
+      # inputs can be either list or tuple, handle both
+      inputs_copy = list(gate.inputs) if isinstance(gate.inputs, (list, tuple)) else gate.inputs.copy()
+      new_lgn.gates.append(Gate(gate.gate_type, inputs_copy))
     return new_lgn
 
   def remove_gate(self, gate_idx: int) -> None:
