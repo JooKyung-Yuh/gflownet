@@ -69,3 +69,7 @@ json/*
 
 # Experiments
 Logic_Gate_Network/experiments/
+
+# Wandb
+wandb/
+Logic_Gate_Network/wandb/

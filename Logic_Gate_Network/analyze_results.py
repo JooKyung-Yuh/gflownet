@@ -219,8 +219,65 @@ def plot_analysis(results, save_dir):
     save_path = save_dir / 'analysis_dashboard.png'
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"✅ Dashboard saved to {save_path}")
+    plt.close(fig)
 
-    plt.show()
+    return fig
+
+
+def analyze_results(sampled_lgns, real_samples, fake_samples, save_dir=None):
+    """
+    Analyze sampled LGNs and create visualization dashboard.
+
+    Args:
+        sampled_lgns: List of sampled LGNState objects
+        real_samples: Real data samples
+        fake_samples: Fake data samples
+        save_dir: Optional directory to save plots
+
+    Returns:
+        matplotlib.figure.Figure: The analysis dashboard figure
+    """
+    # Compute results
+    reward_fn = RewardFunction()
+
+    results = {
+        'num_gates': [],
+        'rewards': [],
+        'log_rewards': [],
+        'real_accuracy': [],
+        'fake_accuracy': [],
+        'overall_accuracy': [],
+        'gate_types': {}
+    }
+
+    for lgn in sampled_lgns:
+        # Metrics
+        results['num_gates'].append(lgn.get_num_gates())
+
+        # Compute reward
+        log_reward = reward_fn.compute_reward(lgn, real_samples, fake_samples)
+        results['log_rewards'].append(log_reward)
+        results['rewards'].append(np.exp(log_reward))
+
+        # Compute accuracies
+        real_acc = reward_fn._compute_accuracy(lgn, real_samples)
+        fake_acc = reward_fn._compute_accuracy(lgn, fake_samples)
+        overall_acc = (real_acc + fake_acc) / 2
+
+        results['real_accuracy'].append(real_acc)
+        results['fake_accuracy'].append(fake_acc)
+        results['overall_accuracy'].append(overall_acc)
+
+        # Count gate types
+        for gate in lgn.gates:
+            gate_type = gate.gate_type.name
+            results['gate_types'][gate_type] = results['gate_types'].get(gate_type, 0) + 1
+
+    # Create plot
+    if save_dir is None:
+        save_dir = Path('temp_analysis')
+
+    return plot_analysis(results, save_dir)
 
 
 def print_statistics(results):

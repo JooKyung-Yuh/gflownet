@@ -218,8 +218,11 @@ def visualize_lgn(lgn, save_path=None, title="Logic Gate Network", sample_data=N
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"✅ Figure saved to {save_path}")
+        plt.close(fig)
+    else:
+        plt.show()
 
-    plt.show()
+    return fig
 
 
 def main():

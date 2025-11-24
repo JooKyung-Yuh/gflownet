@@ -14,6 +14,7 @@ import numpy as np
 from pathlib import Path
 import pickle
 import hashlib
+from datetime import datetime
 
 from lgn.network import LGNState
 from lgn.gates import GateType
@@ -25,6 +26,13 @@ from reward.reward_fn import RewardFunction
 from data.generator import RealDataGenerator, FakeDataGenerator
 from data.dataset import LGNDataset
 from rules.rule_1 import Rule1_NoConsecutive1s
+
+# Optional wandb import
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 
 
 def get_cache_path(rule_name: str, dimension: int, count: int) -> Path:
@@ -106,8 +114,21 @@ def main():
     parser.add_argument('--data-samples', type=int, default=1000, help='Number of data samples to generate')
     parser.add_argument('--test-ratio', type=float, default=0.2, help='Test split ratio')
     parser.add_argument('--no-cache', action='store_true', help='Force regeneration of data (ignore cache)')
+    parser.add_argument('--no-wandb', action='store_true', help='Disable Weights & Biases experiment tracking')
+    parser.add_argument('--wandb-project', type=str, default='lgn-gflownet', help='Wandb project name')
+    parser.add_argument('--wandb-run-name', type=str, default=None, help='Wandb run name (auto-generated if not specified)')
 
     args = parser.parse_args()
+
+    # Wandb is enabled by default (unless --no-wandb is specified)
+    use_wandb = not args.no_wandb and WANDB_AVAILABLE
+
+    # Check wandb availability
+    if not args.no_wandb and not WANDB_AVAILABLE:
+        print("⚠️  Warning: wandb is not installed. Experiment tracking disabled.")
+        print("   Install with: pip install wandb")
+        print("   Or use --no-wandb to suppress this warning.\n")
+        use_wandb = False
 
     print("=" * 80)
     print("Logic Gate Network GFlowNet - Training with Real Data")
@@ -122,6 +143,23 @@ def main():
     print(f"  learning_rate: {args.lr}")
     print(f"  data_samples: {args.data_samples}")
     print(f"  test_ratio: {args.test_ratio}")
+
+    # Generate timestamp for this run
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = f"{timestamp}_{args.num_inputs}in_{args.max_gates}g_{args.iterations}it"
+
+    # Initialize wandb if enabled
+    if use_wandb:
+        run_name = args.wandb_run_name or run_id
+        wandb.init(
+            project=args.wandb_project,
+            name=run_name,
+            config=vars(args)
+        )
+        print(f"\n✅ Wandb initialized: {wandb.run.name}")
+        print(f"   Dashboard: {wandb.run.url}")
+    else:
+        print(f"\n⚠️  Wandb disabled (use without --no-wandb to enable)")
 
     # Step 1: Load or generate training data
     print(f"\n[1/5] Loading/Generating training data...")
@@ -256,11 +294,49 @@ def main():
 
     print(f"\n✅ Training complete! Model ready for evaluation.")
 
-    # Save model
-    model_path = Path("experiments/trained_model.pt")
-    model_path.parent.mkdir(exist_ok=True)
+    # Log to wandb
+    if use_wandb:
+        # Log final metrics
+        wandb.log({
+            "final/loss": metrics['loss'][-1],
+            "final/terminal_loss": metrics['term_loss'][-1],
+            "final/flow_loss": metrics['flow_loss'][-1],
+            "final/mean_reward": metrics['mean_reward'][-1],
+            "final/loss_improvement": metrics['loss'][0] - metrics['loss'][-1],
+        })
+
+        # Log all metrics history
+        for i in range(len(metrics['loss'])):
+            wandb.log({
+                "train/loss": metrics['loss'][i],
+                "train/terminal_loss": metrics['term_loss'][i],
+                "train/flow_loss": metrics['flow_loss'][i],
+                "train/mean_reward": metrics['mean_reward'][i],
+                "iteration": i,
+            }, step=i)
+
+    # Save model with timestamp
+    models_dir = Path("experiments/models")
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    model_filename = f"model_{run_id}.pt"
+    model_path = models_dir / model_filename
     torch.save(policy.state_dict(), model_path)
     print(f"\n✅ Model saved to {model_path}")
+
+    # Also save as 'latest' for convenience
+    latest_path = Path("experiments/trained_model.pt")
+    torch.save(policy.state_dict(), latest_path)
+    print(f"✅ Latest model link: {latest_path}")
+
+    # Save model to wandb
+    if use_wandb:
+        wandb.save(str(model_path))
+        print(f"✅ Model saved to wandb")
+
+    # Finish wandb run
+    if use_wandb:
+        wandb.finish()
 
     return metrics, policy
 

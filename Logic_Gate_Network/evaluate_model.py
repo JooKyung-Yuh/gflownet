@@ -12,6 +12,7 @@ import torch
 import argparse
 import numpy as np
 from pathlib import Path
+from datetime import datetime
 
 from lgn.network import LGNState
 from gflownet.policy_network_gnn import LGNGNNPolicy
@@ -199,7 +200,7 @@ def evaluate_model(model_path, num_inputs, max_gates, node_emb_dim=128, num_conv
 
     print("\n" + "="*80)
 
-    return metrics, sampled_lgns, best_lgn
+    return metrics, sampled_lgns, best_lgn, real_samples, fake_samples
 
 
 def main():
@@ -218,8 +219,17 @@ def main():
                         help='Number of LGNs to sample for evaluation')
     parser.add_argument('--data-samples', type=int, default=50,
                         help='Number of data samples for evaluation')
+    parser.add_argument('--auto-viz', action='store_true',
+                        help='Automatically generate visualizations after evaluation')
+    parser.add_argument('--output-dir', type=str, default=None,
+                        help='Output directory for visualizations (auto-generated with timestamp if not specified)')
 
     args = parser.parse_args()
+
+    # Generate timestamp-based output directory if not specified
+    if args.auto_viz and args.output_dir is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.output_dir = f"experiments/eval_results/eval_{timestamp}"
 
     # Check if model exists
     if not Path(args.model).exists():
@@ -229,7 +239,7 @@ def main():
         return
 
     # Evaluate
-    metrics, sampled_lgns, best_lgn = evaluate_model(
+    metrics, sampled_lgns, best_lgn, real_samples, fake_samples = evaluate_model(
         model_path=args.model,
         num_inputs=args.num_inputs,
         max_gates=args.max_gates,
@@ -242,8 +252,75 @@ def main():
     print(f"\n✅ Evaluation complete!")
     print(f"   - Sampled {len(sampled_lgns)} LGNs")
     print(f"   - Best LGN has {best_lgn.get_num_gates()} gates")
-    print(f"\nTo visualize the best LGN:")
-    print(f"  python visualize_lgn.py --model {args.model} --num-inputs {args.num_inputs} --max-gates {args.max_gates}")
+
+    # Auto-visualization
+    if args.auto_viz:
+        print(f"\n🎨 Generating visualizations...")
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Import visualization modules
+        import sys
+        import matplotlib.pyplot as plt
+        from visualize_lgn import visualize_lgn
+        from analyze_results import analyze_results
+
+        # 1. Visualize top 3 LGNs
+        print(f"\n  [1/3] Generating LGN visualizations...")
+        top_indices = np.argsort(metrics['rewards'])[-3:][::-1]  # Top 3 by reward
+
+        for rank, idx in enumerate(top_indices):
+            lgn = sampled_lgns[idx]
+            sample_data = real_samples[0] if len(real_samples) > 0 else None
+
+            title = f"LGN Rank {rank+1} (Sample {idx}): {lgn.get_num_gates()} gates"
+            title += f" | Real={metrics['real_accuracy'][idx]:.0%}, Fake={metrics['fake_accuracy'][idx]:.0%}"
+
+            save_path = output_dir / f"lgn_rank{rank+1}_sample{idx}.png"
+            fig = visualize_lgn(lgn, sample_data=sample_data, title=title)
+            fig.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            print(f"     ✅ Saved: {save_path}")
+
+        # 2. Generate analysis dashboard
+        print(f"\n  [2/3] Generating analysis dashboard...")
+        dashboard_path = output_dir / "analysis_dashboard.png"
+        fig = analyze_results(sampled_lgns, real_samples, fake_samples)
+        fig.savefig(dashboard_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"     ✅ Saved: {dashboard_path}")
+
+        # 3. Save metrics to JSON
+        print(f"\n  [3/3] Saving metrics...")
+        import json
+        metrics_path = output_dir / "metrics.json"
+
+        # Convert numpy types to Python types for JSON serialization
+        metrics_json = {
+            'num_gates': [int(x) for x in metrics['num_gates']],
+            'real_accuracy': [float(x) for x in metrics['real_accuracy']],
+            'fake_accuracy': [float(x) for x in metrics['fake_accuracy']],
+            'rewards': [float(x) for x in metrics['rewards']],
+            'log_rewards': [float(x) for x in metrics['log_rewards']],
+            'summary': {
+                'mean_gates': float(np.mean(metrics['num_gates'])),
+                'mean_real_accuracy': float(np.mean(metrics['real_accuracy'])),
+                'mean_fake_accuracy': float(np.mean(metrics['fake_accuracy'])),
+                'mean_reward': float(np.mean(metrics['rewards'])),
+                'best_reward': float(np.max(metrics['rewards'])),
+                'best_lgn_gates': int(best_lgn.get_num_gates()),
+            }
+        }
+
+        with open(metrics_path, 'w') as f:
+            json.dump(metrics_json, f, indent=2)
+        print(f"     ✅ Saved: {metrics_path}")
+
+        print(f"\n✅ All visualizations saved to: {output_dir}")
+    else:
+        print(f"\nTo visualize the best LGN:")
+        print(f"  python visualize_lgn.py --model {args.model} --num-inputs {args.num_inputs} --max-gates {args.max_gates}")
+        print(f"\nOr use --auto-viz flag for automatic visualization generation")
 
 
 if __name__ == "__main__":
