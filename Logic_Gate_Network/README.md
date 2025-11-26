@@ -20,6 +20,9 @@ A GFlowNet-based system for generating and evaluating Logic Gate Networks (LGN).
 - **Trajectory Balance Loss** (GFlowNet training)
 - **Real/Fake Classification Reward**
 - **Automatic Data Caching**
+- **Wandb Integration** (Real-time training monitoring - enabled by default)
+- **Auto-Visualization** (Automatic evaluation + visualization pipeline)
+- **Timestamp-based File Organization** (Track all experiments)
 - **Hierarchical Tree Visualization**
 - **Comprehensive Evaluation Tools**
 
@@ -41,7 +44,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Training
+### Training (Wandb enabled by default)
 
 ```bash
 # Quick test (1 minute)
@@ -52,7 +55,7 @@ python train_with_real_data.py \
   --data-samples 20 \
   --batch-size 2
 
-# Full training (10 minutes)
+# Full training (10 minutes) - Wandb tracking enabled
 python train_with_real_data.py \
   --num-inputs 6 \
   --max-gates 3 \
@@ -61,12 +64,30 @@ python train_with_real_data.py \
   --batch-size 4 \
   --node-emb-dim 64 \
   --num-conv-steps 2
+
+# Disable wandb if needed
+python train_with_real_data.py \
+  --num-inputs 6 --max-gates 3 \
+  --iterations 30 \
+  --no-wandb
 ```
 
-### Evaluation
+**Models saved to**: `experiments/models/model_{timestamp}_{params}.pt`
+
+### Evaluation with Auto-Visualization
 
 ```bash
-# Evaluate model
+# Auto-evaluation + visualization (recommended)
+python evaluate_model.py \
+  --model experiments/trained_model.pt \
+  --num-inputs 6 \
+  --max-gates 3 \
+  --node-emb-dim 64 \
+  --num-conv-steps 2 \
+  --num-samples 10 \
+  --auto-viz
+
+# Manual evaluation (without auto-viz)
 python evaluate_model.py \
   --model experiments/trained_model.pt \
   --num-inputs 6 \
@@ -74,26 +95,9 @@ python evaluate_model.py \
   --node-emb-dim 64 \
   --num-conv-steps 2 \
   --num-samples 5
-
-# Visualize LGNs
-python visualize_lgn.py \
-  --model experiments/trained_model.pt \
-  --num-inputs 6 \
-  --max-gates 3 \
-  --node-emb-dim 64 \
-  --num-conv-steps 2 \
-  --output experiments/lgn_viz.png
-
-# Analyze results
-python analyze_results.py \
-  --model experiments/trained_model.pt \
-  --num-inputs 6 \
-  --max-gates 3 \
-  --node-emb-dim 64 \
-  --num-conv-steps 2 \
-  --num-samples 100 \
-  --output experiments/analysis.png
 ```
+
+**Results saved to**: `experiments/eval_results/eval_{timestamp}/`
 
 **See also**: [QUICKSTART.md](QUICKSTART.md) | [COMMANDS.md](COMMANDS.md)
 
@@ -186,7 +190,27 @@ Logic_Gate_Network/
 
 ## Features
 
-### 1. Automatic Data Caching
+### 1. Wandb Integration (Default)
+
+**Wandb is enabled by default** for experiment tracking:
+
+- Real-time training metrics (loss, reward, etc.)
+- Automatic model artifact saving
+- Training curve visualization
+- Easy experiment comparison
+
+```bash
+# First run: wandb login required
+wandb login
+
+# Training with wandb (default)
+python train_with_real_data.py --num-inputs 6 --iterations 30
+
+# Disable wandb if needed
+python train_with_real_data.py --num-inputs 6 --iterations 30 --no-wandb
+```
+
+### 2. Automatic Data Caching
 
 Data generation results are automatically cached and reused.
 
@@ -200,7 +224,46 @@ python train_with_real_data.py --num-inputs 6 --data-samples 20
 
 Cache location: `experiments/cached_data/`
 
-### 2. GNN Policy Network
+### 3. Auto-Visualization Pipeline
+
+Automatic visualization generation after evaluation:
+
+```bash
+python evaluate_model.py \
+  --model experiments/trained_model.pt \
+  --num-inputs 6 --max-gates 3 \
+  --num-samples 10 \
+  --auto-viz
+```
+
+**Generates**:
+
+- Top 3 LGN visualizations
+- 9-panel analysis dashboard
+- Metrics JSON file
+
+All saved to: `experiments/eval_results/eval_{timestamp}/`
+
+### 4. Timestamp-based File Organization
+
+All experiments are saved with timestamps for easy tracking:
+
+```text
+experiments/
+├── models/
+│   ├── model_20251123_210000_6in_3g_30it.pt
+│   ├── model_20251123_220000_6in_3g_50it.pt
+│   └── ...
+├── trained_model.pt  ← Latest model
+└── eval_results/
+    ├── eval_20251123_210500/
+    │   ├── lgn_rank1_sample7.png
+    │   ├── analysis_dashboard.png
+    │   └── metrics.json
+    └── ...
+```
+
+### 5. GNN Policy Network
 
 Graph Neural Network-based policy network:
 
@@ -209,7 +272,7 @@ Graph Neural Network-based policy network:
 - **Architecture**: 2-layer GCNConv + MLP heads
 - **Output**: Action Q-values + Stop Q-value
 
-### 3. Hierarchical Visualization
+### 6. Hierarchical Visualization
 
 LGN visualization with tree structure:
 
@@ -218,7 +281,7 @@ LGN visualization with tree structure:
 - Input values displayed on each node
 - Clear data flow representation
 
-### 4. Comprehensive Evaluation
+### 7. Comprehensive Evaluation
 
 Three evaluation tools:
 
