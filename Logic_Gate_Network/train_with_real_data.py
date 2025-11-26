@@ -104,10 +104,11 @@ def main():
     parser = argparse.ArgumentParser(description='Train LGN GFlowNet with real data')
     parser.add_argument('--num-inputs', type=int, default=10, help='Number of input features')
     parser.add_argument('--max-gates', type=int, default=15, help='Maximum number of gates')
-    parser.add_argument('--iterations', type=int, default=100, help='Training iterations')
-    parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
+    parser.add_argument('--iterations', type=int, default=10000, help='Training iterations (gradient steps, recommended: 10000+)')
+    parser.add_argument('--batch-size', type=int, default=32, help='Batch size (recommended: 10-100)')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
-    parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda'])
+    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda', 'mps'],
+                        help='Device to use (auto=best available, mps=Apple Silicon GPU)')
     parser.add_argument('--node-emb-dim', type=int, default=128)
     parser.add_argument('--num-conv-steps', type=int, default=3)
     parser.add_argument('--print-every', type=int, default=10)
@@ -117,6 +118,10 @@ def main():
     parser.add_argument('--no-wandb', action='store_true', help='Disable Weights & Biases experiment tracking')
     parser.add_argument('--wandb-project', type=str, default='lgn-gflownet', help='Wandb project name')
     parser.add_argument('--wandb-run-name', type=str, default=None, help='Wandb run name (auto-generated if not specified)')
+    parser.add_argument('--eval-every', type=int, default=50, help='Evaluate FN/FP rates every N iterations')
+    parser.add_argument('--eval-samples', type=int, default=5, help='Number of LGNs to sample for evaluation')
+    parser.add_argument('--max-and-arity', type=int, default=2,
+                        help='Max inputs for AND gates (0=no limit, 2=fast, 4=balanced). Default: 2')
 
     args = parser.parse_args()
 
@@ -134,6 +139,17 @@ def main():
     print("Logic Gate Network GFlowNet - Training with Real Data")
     print("=" * 80)
 
+    # Device selection
+    if args.device == 'auto':
+        if torch.cuda.is_available():
+            device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            device = torch.device('mps')
+        else:
+            device = torch.device('cpu')
+    else:
+        device = torch.device(args.device)
+
     # Configuration
     print(f"\nConfiguration:")
     print(f"  num_inputs: {args.num_inputs}")
@@ -143,6 +159,8 @@ def main():
     print(f"  learning_rate: {args.lr}")
     print(f"  data_samples: {args.data_samples}")
     print(f"  test_ratio: {args.test_ratio}")
+    print(f"  device: {device}")
+    print(f"  max_and_arity: {args.max_and_arity} {'(no limit)' if args.max_and_arity == 0 else ''}")
 
     # Generate timestamp for this run
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -223,12 +241,16 @@ def main():
         max_gates=args.max_gates,
         node_emb_dim=args.node_emb_dim,
         num_conv_steps=args.num_conv_steps
-    )
-    print(f"  ✅ Policy network created")
+    ).to(device)
+    print(f"  ✅ Policy network created (on {device})")
 
     mdp = LGNMDP(num_inputs=args.num_inputs, max_gates=args.max_gates)
-    action_space = LGNActionSpace(num_inputs=args.num_inputs, max_gates=args.max_gates)
-    print(f"  ✅ MDP and Action Space created")
+    action_space = LGNActionSpace(
+        num_inputs=args.num_inputs,
+        max_gates=args.max_gates,
+        max_and_arity=args.max_and_arity
+    )
+    print(f"  ✅ MDP and Action Space created (max_and_arity={args.max_and_arity})")
 
     # Create reward function connected to real data
     reward_fn = RewardFunction()
@@ -257,11 +279,88 @@ def main():
         action_space=action_space,
         reward_fn=compute_reward,
         optimizer=optimizer,
-        device=torch.device(args.device),
+        device=device,
         balanced_loss=True,
         leaf_coef=10.0
     )
     print(f"  ✅ Trainer created")
+
+    # Create evaluation function for FN/FP trend tracking
+    def create_eval_fn(policy, mdp, action_space, test_real, test_fake, num_samples):
+        """Create evaluation function closure for periodic FN/FP evaluation."""
+        from lgn import LGNEvaluator
+        evaluator = LGNEvaluator()
+
+        def eval_fn():
+            """Sample LGNs and compute FN/FP rates on test data."""
+            fn_rates = []
+            fp_rates = []
+            real_rejection_rates = []
+            fake_rejection_rates = []
+
+            with torch.no_grad():
+                for _ in range(num_samples):
+                    # Sample one LGN using greedy policy (argmax)
+                    lgn = LGNState(num_inputs=mdp.num_inputs, max_gates=mdp.max_gates)
+
+                    while not lgn.is_terminal():
+                        actions = action_space.get_valid_actions(lgn)
+                        gate_actions = [a for a in actions if 'gate_type' in a]
+
+                        action_q, stop_q = policy.forward_policy(lgn, gate_actions)
+
+                        # Greedy: take argmax
+                        if len(gate_actions) > 0:
+                            all_q = torch.cat([action_q, stop_q.unsqueeze(0)])
+                            all_actions = gate_actions + [{'action': 'stop'}]
+                        else:
+                            all_q = stop_q.unsqueeze(0)
+                            all_actions = [{'action': 'stop'}]
+
+                        best_idx = all_q.argmax().item()
+                        best_action = all_actions[best_idx]
+
+                        if 'action' in best_action and best_action['action'] == 'stop':
+                            break
+                        else:
+                            lgn.add_gate(best_action['gate_type'], best_action['input_indices'])
+
+                    # Evaluate on test data
+                    real_outputs = evaluator.evaluate_batch(lgn, test_real)
+                    fake_outputs = evaluator.evaluate_batch(lgn, test_fake)
+
+                    # FN rate: Real samples incorrectly rejected (output 0)
+                    fn_rate = (len(test_real) - real_outputs.count(1)) / len(test_real)
+                    fn_rates.append(fn_rate)
+
+                    # FP rate: Fake samples incorrectly accepted (output 1)
+                    fp_rate = fake_outputs.count(1) / len(test_fake)
+                    fp_rates.append(fp_rate)
+
+                    # Rejection rates (for trend tracking)
+                    real_rejection_rate = real_outputs.count(0) / len(test_real)
+                    fake_rejection_rate = fake_outputs.count(0) / len(test_fake)
+                    real_rejection_rates.append(real_rejection_rate)
+                    fake_rejection_rates.append(fake_rejection_rate)
+
+            return {
+                'fn_rate': np.mean(fn_rates),
+                'fp_rate': np.mean(fp_rates),
+                'real_rejection_rate': np.mean(real_rejection_rates),
+                'fake_rejection_rate': np.mean(fake_rejection_rates),
+            }
+
+        return eval_fn
+
+    eval_fn = create_eval_fn(
+        policy=policy,
+        mdp=mdp,
+        action_space=action_space,
+        test_real=test_real,
+        test_fake=test_fake,
+        num_samples=args.eval_samples
+    )
+    print(f"  ✅ Evaluation function created (eval_every={args.eval_every}, samples={args.eval_samples})")
 
     # Step 5: Train!
     print(f"\n[5/5] Training...")
@@ -272,7 +371,10 @@ def main():
         num_iterations=args.iterations,
         batch_size=args.batch_size,
         log_every=args.print_every,
-        verbose=True
+        verbose=True,
+        wandb_log=use_wandb,  # Real-time wandb logging
+        eval_fn=eval_fn,  # FN/FP trend tracking
+        eval_every=args.eval_every
     )
 
     print("\n" + "=" * 80)
@@ -294,9 +396,8 @@ def main():
 
     print(f"\n✅ Training complete! Model ready for evaluation.")
 
-    # Log to wandb
+    # Log final summary to wandb (real-time logging already done during training)
     if use_wandb:
-        # Log final metrics
         wandb.log({
             "final/loss": metrics['loss'][-1],
             "final/terminal_loss": metrics['term_loss'][-1],
@@ -304,16 +405,6 @@ def main():
             "final/mean_reward": metrics['mean_reward'][-1],
             "final/loss_improvement": metrics['loss'][0] - metrics['loss'][-1],
         })
-
-        # Log all metrics history
-        for i in range(len(metrics['loss'])):
-            wandb.log({
-                "train/loss": metrics['loss'][i],
-                "train/terminal_loss": metrics['term_loss'][i],
-                "train/flow_loss": metrics['flow_loss'][i],
-                "train/mean_reward": metrics['mean_reward'][i],
-                "iteration": i,
-            }, step=i)
 
     # Save model with timestamp
     models_dir = Path("experiments/models")
@@ -333,6 +424,74 @@ def main():
     if use_wandb:
         wandb.save(str(model_path))
         print(f"✅ Model saved to wandb")
+
+    # Save convergence graphs
+    print(f"\n📊 Generating convergence graphs...")
+    import matplotlib.pyplot as plt
+
+    graphs_dir = Path("experiments/graphs")
+    graphs_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    iterations_x = list(range(len(metrics['loss'])))
+
+    # 1. Total Loss Curve
+    ax1 = axes[0, 0]
+    ax1.plot(iterations_x, metrics['loss'], 'b-', linewidth=1, alpha=0.7)
+    ax1.set_xlabel('Iteration')
+    ax1.set_ylabel('Loss')
+    ax1.set_title('Loss Curve (Should Decrease)')
+    ax1.grid(True, alpha=0.3)
+    ax1.set_yscale('log')
+
+    # 2. Terminal Loss (TB Loss for terminal states)
+    ax2 = axes[0, 1]
+    ax2.plot(iterations_x, metrics['term_loss'], 'r-', linewidth=1, alpha=0.7, label='Terminal Loss')
+    ax2.plot(iterations_x, metrics['flow_loss'], 'g-', linewidth=1, alpha=0.7, label='Flow Loss')
+    ax2.set_xlabel('Iteration')
+    ax2.set_ylabel('Loss')
+    ax2.set_title('Trajectory Balance Loss Components')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    ax2.set_yscale('log')
+
+    # 3. Reward Curve
+    ax3 = axes[1, 0]
+    ax3.plot(iterations_x, metrics['mean_reward'], 'purple', linewidth=1, alpha=0.7)
+    ax3.set_xlabel('Iteration')
+    ax3.set_ylabel('Mean Reward')
+    ax3.set_title('Reward Curve (Should Increase)')
+    ax3.grid(True, alpha=0.3)
+
+    # 4. Smoothed versions (moving average)
+    ax4 = axes[1, 1]
+    window = min(100, len(metrics['loss']) // 10) if len(metrics['loss']) > 10 else 1
+    if window > 1:
+        loss_smooth = np.convolve(metrics['loss'], np.ones(window)/window, mode='valid')
+        reward_smooth = np.convolve(metrics['mean_reward'], np.ones(window)/window, mode='valid')
+        smooth_x = list(range(len(loss_smooth)))
+        ax4.plot(smooth_x, loss_smooth, 'b-', linewidth=2, label='Loss (smoothed)')
+        ax4_twin = ax4.twinx()
+        ax4_twin.plot(smooth_x, reward_smooth, 'r-', linewidth=2, label='Reward (smoothed)')
+        ax4.set_xlabel('Iteration')
+        ax4.set_ylabel('Loss', color='blue')
+        ax4_twin.set_ylabel('Reward', color='red')
+        ax4.set_title(f'Smoothed Curves (window={window})')
+        ax4.grid(True, alpha=0.3)
+    else:
+        ax4.text(0.5, 0.5, 'Not enough data for smoothing', ha='center', va='center', transform=ax4.transAxes)
+        ax4.set_title('Smoothed Curves')
+
+    plt.tight_layout()
+    convergence_path = graphs_dir / f"convergence_{run_id}.png"
+    plt.savefig(convergence_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"✅ Convergence graphs saved to {convergence_path}")
+
+    # Log convergence image to wandb
+    if use_wandb:
+        wandb.log({"convergence_graphs": wandb.Image(str(convergence_path))})
 
     # Finish wandb run
     if use_wandb:
