@@ -19,3 +19,6 @@ pytest>=7.3.0
 
 # Data handling
 pandas>=2.0.0
+
+# Experiment tracking (optional but recommended)
+wandb>=0.15.0
