@@ -454,6 +454,9 @@ class LGNTrainer:
         batch_size: int,
         log_every: int = 100,
         verbose: bool = True,
+        wandb_log: bool = False,
+        eval_fn: Callable[[], Dict[str, float]] = None,
+        eval_every: int = 100,
     ) -> Dict[str, List[float]]:
         """
         Run full training loop.
@@ -468,12 +471,26 @@ class LGNTrainer:
             Print metrics every N iterations (default: 100)
         verbose : bool
             Whether to print training progress (default: True)
+        wandb_log : bool
+            Whether to log metrics to wandb in real-time (default: False)
+        eval_fn : Callable[[], Dict[str, float]]
+            Optional evaluation function that returns metrics dict (e.g., FN/FP rates)
+        eval_every : int
+            Run evaluation every N iterations (default: 100)
 
         Returns:
         --------
         Dict[str, List[float]]
             Dictionary of training metrics history
         """
+        # Import wandb if needed
+        if wandb_log:
+            try:
+                import wandb
+            except ImportError:
+                print("Warning: wandb not installed, disabling real-time logging")
+                wandb_log = False
+
         all_metrics = {
             'loss': [],
             'term_loss': [],
@@ -504,6 +521,22 @@ class LGNTrainer:
             all_metrics['term_loss'].append(metrics['term_loss'])
             all_metrics['flow_loss'].append(metrics['flow_loss'])
             all_metrics['mean_reward'].append(metrics['mean_reward'])
+
+            # Real-time wandb logging
+            if wandb_log:
+                wandb.log({
+                    "train/loss": metrics['loss'],
+                    "train/terminal_loss": metrics['term_loss'],
+                    "train/flow_loss": metrics['flow_loss'],
+                    "train/mean_reward": metrics['mean_reward'],
+                    "train/iter_time": iter_time,
+                }, step=i)
+
+            # Periodic evaluation (FN/FP tracking)
+            if eval_fn is not None and (i % eval_every == 0 or i == num_iterations - 1):
+                eval_metrics = eval_fn()
+                if wandb_log and eval_metrics:
+                    wandb.log({f"eval/{k}": v for k, v in eval_metrics.items()}, step=i)
 
             # Print progress
             if verbose and (i % log_every == 0 or i == num_iterations - 1):
