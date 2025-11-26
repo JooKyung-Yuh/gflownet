@@ -77,7 +77,7 @@ class LGNActionSpace:
   - GateType: Enum defining logic gate types
   - Forward policy: Uses this class to sample actions during trajectory generation
   """
-  def __init__(self, num_inputs: int, max_gates: int) -> None:
+  def __init__(self, num_inputs: int, max_gates: int, max_and_arity: int = 0) -> None:
     """
     Initialize the Logic Gate Network Action Space.
 
@@ -93,6 +93,14 @@ class LGNActionSpace:
         Must be >= 1. Acts as hard constraint to prevent unbounded network growth.
         Example: max_gates = 15 allows networks with up to 15 logic gates.
 
+    max_and_arity : int
+        Maximum number of inputs for AND gates. Default is 0 (no limit).
+        This prevents action space explosion since AND gates support variable arity.
+        - 0: No limit (original behavior, can be very slow with large networks)
+        - 2: AND gates behave like other binary gates (fastest)
+        - 4: Balanced speed/expressiveness
+        Example: max_and_arity=2 limits AND to 2 inputs like OR, XOR, etc.
+
     Returns:
     --------
     None
@@ -106,11 +114,12 @@ class LGNActionSpace:
 
     Example:
     --------
-    >>> action_space = LGNActionSpace(num_inputs=10, max_gates=15)
+    >>> action_space = LGNActionSpace(num_inputs=10, max_gates=15, max_and_arity=2)
     >>> print(f"Action space configured for {action_space.num_inputs} inputs")
     """
     self.num_inputs = num_inputs
     self.max_gates = max_gates
+    self.max_and_arity = max_and_arity
 
   def get_valid_actions(self, lgn_state: LGNState) -> list[dict[str, Any]]:
     """
@@ -269,17 +278,25 @@ class LGNActionSpace:
 
     # Generate actions for variable-arity AND gate (1+ inputs)
     # AND gate is unique: it supports any number of inputs >= 1
-    # We generate ALL possible combinations from size 1 to size len(available_indices)
     #
-    # Mathematical note:
-    # - Total AND actions = C(n,1) + C(n,2) + ... + C(n,n) = 2^n - 1
-    # - Example with n=10: 1023 different AND gate configurations
+    # If max_and_arity is set (> 0), limit the maximum arity to reduce action space.
+    # Without limit: Total AND actions = C(n,1) + C(n,2) + ... + C(n,n) = 2^n - 1
+    # With limit k:  Total AND actions = C(n,1) + C(n,2) + ... + C(n,k) (much smaller)
     #
-    # This provides maximum expressiveness but increases action space size.
-    # Trade-off: Larger action space vs. more expressive logic networks.
+    # Example with n=10:
+    # - No limit (max_and_arity=0): 1023 AND actions
+    # - max_and_arity=2: 55 AND actions (like other binary gates)
+    # - max_and_arity=4: 385 AND actions
     num_available = len(available_indices)
-    for arity in range(1, num_available + 1):
-        # For each arity (1, 2, 3, ..., num_available)
+
+    # Determine max arity for AND gates
+    if self.max_and_arity > 0:
+        max_arity = min(self.max_and_arity, num_available)
+    else:
+        max_arity = num_available  # No limit
+
+    for arity in range(1, max_arity + 1):
+        # For each arity (1, 2, 3, ..., max_arity)
         # Generate all combinations of that size
         for input_combination in combinations(available_indices, arity):
             action = {
