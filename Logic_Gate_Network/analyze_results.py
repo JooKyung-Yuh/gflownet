@@ -86,9 +86,16 @@ def analyze_model(model_path, num_inputs, max_gates, node_emb_dim=64, num_conv_s
         'num_gates': [],
         'log_rewards': [],
         'rewards': [],
-        'real_accuracy': [],
-        'fake_accuracy': [],
-        'overall_accuracy': [],
+        # FN/FP analysis
+        'fn_rate': [],              # False Negative Rate
+        'fp_rate': [],              # False Positive Rate
+        'real_rejection_rate': [],  # Real data rejection rate
+        'fake_rejection_rate': [],  # Fake data rejection rate
+        # Gate type counts (AND/OR/NOT)
+        'and_count': [],
+        'or_count': [],
+        'not_count': [],
+        'other_count': [],
         'gate_types': {}
     }
 
@@ -100,21 +107,40 @@ def analyze_model(model_path, num_inputs, max_gates, node_emb_dim=64, num_conv_s
         reward = np.exp(log_reward)
         real_errors = reward_fn.compute_real_error_count(lgn, real_samples)
         fake_accepts = reward_fn.compute_fake_acceptance_count(lgn, fake_samples)
-        real_acc = 1.0 - (real_errors / len(real_samples))
-        fake_acc = 1.0 - (fake_accepts / len(fake_samples))
-        overall_acc = (real_acc + fake_acc) / 2.0
+
+        # FN/FP rates
+        fn_rate = real_errors / len(real_samples)
+        fp_rate = fake_accepts / len(fake_samples)
+        # Rejection rates
+        real_rejection_rate = fn_rate
+        fake_rejection_rate = 1.0 - fp_rate
 
         results['num_gates'].append(lgn.get_num_gates())
         results['log_rewards'].append(log_reward)
         results['rewards'].append(reward)
-        results['real_accuracy'].append(real_acc)
-        results['fake_accuracy'].append(fake_acc)
-        results['overall_accuracy'].append(overall_acc)
+        results['fn_rate'].append(fn_rate)
+        results['fp_rate'].append(fp_rate)
+        results['real_rejection_rate'].append(real_rejection_rate)
+        results['fake_rejection_rate'].append(fake_rejection_rate)
 
-        # Count gate types
+        # Count gate types (AND/OR/NOT separately)
+        and_cnt, or_cnt, not_cnt, other_cnt = 0, 0, 0, 0
         for gate in lgn.gates:
             gate_type = gate.gate_type.name
             results['gate_types'][gate_type] = results['gate_types'].get(gate_type, 0) + 1
+            if gate_type == 'AND':
+                and_cnt += 1
+            elif gate_type == 'OR':
+                or_cnt += 1
+            elif gate_type == 'NOT':
+                not_cnt += 1
+            else:
+                other_cnt += 1
+
+        results['and_count'].append(and_cnt)
+        results['or_count'].append(or_cnt)
+        results['not_count'].append(not_cnt)
+        results['other_count'].append(other_cnt)
 
         if (i+1) % 10 == 0:
             print(f"  Sampled {i+1}/{num_samples} LGNs...")
@@ -125,95 +151,105 @@ def analyze_model(model_path, num_inputs, max_gates, node_emb_dim=64, num_conv_s
 
 
 def plot_analysis(results, save_dir):
-    """Create comprehensive analysis plots."""
+    """
+    Create comprehensive analysis plots.
+
+    Included graphs:
+    1. Reward Distribution
+    2. Log-Reward Distribution
+    3. FN Rate (False Negative Rate)
+    4. FP Rate (False Positive Rate)
+    5. Rejection Rates Comparison (Real vs Fake)
+    6. Gate Type Distribution (AND/OR/NOT)
+    """
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create figure with subplots
-    fig = plt.figure(figsize=(16, 12))
+    # Create figure with subplots (2x3 layout)
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
 
-    # 1. Distribution of Number of Gates
-    ax1 = plt.subplot(3, 3, 1)
-    plt.hist(results['num_gates'], bins=range(0, max(results['num_gates'])+2), alpha=0.7, color='skyblue', edgecolor='black')
-    plt.xlabel('Number of Gates')
-    plt.ylabel('Frequency')
-    plt.title('Distribution of Gate Count')
-    plt.grid(True, alpha=0.3)
+    # 1. Reward Distribution
+    ax1 = axes[0, 0]
+    ax1.hist(results['rewards'], bins=30, alpha=0.7, color='lightgreen', edgecolor='black')
+    ax1.axvline(np.mean(results['rewards']), color='red', linestyle='--',
+                label=f'Mean: {np.mean(results["rewards"]):.4f}')
+    ax1.set_xlabel('Reward')
+    ax1.set_ylabel('Frequency')
+    ax1.set_title('Reward Distribution')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
 
-    # 2. Reward Distribution
-    ax2 = plt.subplot(3, 3, 2)
-    plt.hist(results['rewards'], bins=30, alpha=0.7, color='lightgreen', edgecolor='black')
-    plt.xlabel('Reward')
-    plt.ylabel('Frequency')
-    plt.title('Reward Distribution')
-    plt.grid(True, alpha=0.3)
+    # 2. Log-Reward Distribution
+    ax2 = axes[0, 1]
+    ax2.hist(results['log_rewards'], bins=30, alpha=0.7, color='lightcoral', edgecolor='black')
+    ax2.axvline(np.mean(results['log_rewards']), color='red', linestyle='--',
+                label=f'Mean: {np.mean(results["log_rewards"]):.2f}')
+    ax2.set_xlabel('Log-Reward')
+    ax2.set_ylabel('Frequency')
+    ax2.set_title('Log-Reward Distribution')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
 
-    # 3. Log-Reward Distribution
-    ax3 = plt.subplot(3, 3, 3)
-    plt.hist(results['log_rewards'], bins=30, alpha=0.7, color='lightcoral', edgecolor='black')
-    plt.xlabel('Log-Reward')
-    plt.ylabel('Frequency')
-    plt.title('Log-Reward Distribution')
-    plt.grid(True, alpha=0.3)
+    # 3. FN Rate Distribution (False Negative: Real → Reject)
+    ax3 = axes[0, 2]
+    ax3.hist(results['fn_rate'], bins=20, alpha=0.7, color='salmon', edgecolor='black')
+    mean_fn = np.mean(results['fn_rate'])
+    ax3.axvline(mean_fn, color='darkred', linestyle='--', linewidth=2,
+                label=f'Mean FN Rate: {mean_fn:.2%}')
+    ax3.set_xlabel('False Negative Rate')
+    ax3.set_ylabel('Frequency')
+    ax3.set_title('FN Rate (Real→Reject, Should be LOW)')
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
 
-    # 4. Real Accuracy Distribution
-    ax4 = plt.subplot(3, 3, 4)
-    plt.hist(results['real_accuracy'], bins=30, alpha=0.7, color='gold', edgecolor='black')
-    plt.xlabel('Real Data Accuracy')
-    plt.ylabel('Frequency')
-    plt.title('Real Data Accuracy Distribution')
-    plt.grid(True, alpha=0.3)
-    plt.axvline(np.mean(results['real_accuracy']), color='red', linestyle='--', label=f'Mean: {np.mean(results["real_accuracy"]):.2%}')
-    plt.legend()
+    # 4. FP Rate Distribution (False Positive: Fake → Accept)
+    ax4 = axes[1, 0]
+    ax4.hist(results['fp_rate'], bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+    mean_fp = np.mean(results['fp_rate'])
+    ax4.axvline(mean_fp, color='darkblue', linestyle='--', linewidth=2,
+                label=f'Mean FP Rate: {mean_fp:.2%}')
+    ax4.set_xlabel('False Positive Rate')
+    ax4.set_ylabel('Frequency')
+    ax4.set_title('FP Rate (Fake→Accept, Should be LOW)')
+    ax4.legend()
+    ax4.grid(True, alpha=0.3)
 
-    # 5. Fake Accuracy Distribution
-    ax5 = plt.subplot(3, 3, 5)
-    plt.hist(results['fake_accuracy'], bins=30, alpha=0.7, color='plum', edgecolor='black')
-    plt.xlabel('Fake Data Accuracy (Rejection Rate)')
-    plt.ylabel('Frequency')
-    plt.title('Fake Data Accuracy Distribution')
-    plt.grid(True, alpha=0.3)
-    plt.axvline(np.mean(results['fake_accuracy']), color='red', linestyle='--', label=f'Mean: {np.mean(results["fake_accuracy"]):.2%}')
-    plt.legend()
+    # 5. Rejection Rates Comparison (Real vs Fake)
+    ax5 = axes[1, 1]
+    sample_indices = list(range(len(results['real_rejection_rate'])))
+    ax5.scatter(sample_indices, results['real_rejection_rate'], alpha=0.6, color='red',
+                label=f'Real Rejection (Mean: {np.mean(results["real_rejection_rate"]):.2%})', s=20)
+    ax5.scatter(sample_indices, results['fake_rejection_rate'], alpha=0.6, color='blue',
+                label=f'Fake Rejection (Mean: {np.mean(results["fake_rejection_rate"]):.2%})', s=20)
+    ax5.axhline(np.mean(results['real_rejection_rate']), color='darkred', linestyle='--', alpha=0.7)
+    ax5.axhline(np.mean(results['fake_rejection_rate']), color='darkblue', linestyle='--', alpha=0.7)
+    ax5.set_xlabel('Sample Index')
+    ax5.set_ylabel('Rejection Rate')
+    ax5.set_title('Rejection Rates (Red↓ Blue↑ is Good)')
+    ax5.legend(loc='best')
+    ax5.grid(True, alpha=0.3)
+    ax5.set_ylim(0, 1.05)
 
-    # 6. Overall Accuracy
-    ax6 = plt.subplot(3, 3, 6)
-    plt.hist(results['overall_accuracy'], bins=30, alpha=0.7, color='lightblue', edgecolor='black')
-    plt.xlabel('Overall Accuracy')
-    plt.ylabel('Frequency')
-    plt.title('Overall Accuracy Distribution')
-    plt.grid(True, alpha=0.3)
-    plt.axvline(np.mean(results['overall_accuracy']), color='red', linestyle='--', label=f'Mean: {np.mean(results["overall_accuracy"]):.2%}')
-    plt.legend()
-
-    # 7. Accuracy vs Num Gates
-    ax7 = plt.subplot(3, 3, 7)
-    plt.scatter(results['num_gates'], results['overall_accuracy'], alpha=0.6, color='steelblue')
-    plt.xlabel('Number of Gates')
-    plt.ylabel('Overall Accuracy')
-    plt.title('Accuracy vs Complexity')
-    plt.grid(True, alpha=0.3)
-
-    # 8. Gate Type Distribution
-    ax8 = plt.subplot(3, 3, 8)
-    if results['gate_types']:
-        gate_names = list(results['gate_types'].keys())
-        gate_counts = list(results['gate_types'].values())
-        colors = plt.cm.Set3(np.linspace(0, 1, len(gate_names)))
-        plt.bar(gate_names, gate_counts, color=colors, edgecolor='black')
-        plt.xlabel('Gate Type')
-        plt.ylabel('Total Count')
-        plt.title('Gate Type Distribution')
-        plt.xticks(rotation=45, ha='right')
-        plt.grid(True, alpha=0.3, axis='y')
-
-    # 9. Reward vs Accuracy
-    ax9 = plt.subplot(3, 3, 9)
-    plt.scatter(results['overall_accuracy'], results['rewards'], alpha=0.6, color='coral')
-    plt.xlabel('Overall Accuracy')
-    plt.ylabel('Reward')
-    plt.title('Reward vs Accuracy')
-    plt.grid(True, alpha=0.3)
+    # 6. Gate Type Distribution (AND/OR/NOT)
+    ax6 = axes[1, 2]
+    gate_labels = ['AND', 'OR', 'NOT', 'Other']
+    gate_totals = [
+        sum(results['and_count']),
+        sum(results['or_count']),
+        sum(results['not_count']),
+        sum(results['other_count'])
+    ]
+    colors = ['#4CAF50', '#2196F3', '#FF9800', '#9E9E9E']
+    bars = ax6.bar(gate_labels, gate_totals, color=colors, edgecolor='black')
+    ax6.set_xlabel('Gate Type')
+    ax6.set_ylabel('Total Count')
+    ax6.set_title('Gate Type Distribution')
+    ax6.grid(True, alpha=0.3, axis='y')
+    # Add value labels on bars
+    for bar, val in zip(bars, gate_totals):
+        if val > 0:
+            ax6.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                    str(val), ha='center', va='bottom', fontsize=10)
 
     plt.tight_layout()
     save_path = save_dir / 'analysis_dashboard.png'
@@ -289,14 +325,24 @@ def print_statistics(results):
     print(f"\n{'Metric':<30} {'Mean':<15} {'Std':<15} {'Min':<15} {'Max':<15}")
     print("-"*80)
 
+    # Core metrics
     metrics = {
         'Number of Gates': results['num_gates'],
         'Reward': results['rewards'],
         'Log-Reward': results['log_rewards'],
-        'Real Accuracy': results['real_accuracy'],
-        'Fake Accuracy': results['fake_accuracy'],
-        'Overall Accuracy': results['overall_accuracy']
     }
+
+    # Add FN/FP metrics if available
+    if 'fn_rate' in results:
+        metrics['False Negative Rate'] = results['fn_rate']
+        metrics['False Positive Rate'] = results['fp_rate']
+        metrics['Real Rejection Rate'] = results['real_rejection_rate']
+        metrics['Fake Rejection Rate'] = results['fake_rejection_rate']
+    # Fallback to old accuracy metrics
+    elif 'real_accuracy' in results:
+        metrics['Real Accuracy'] = results['real_accuracy']
+        metrics['Fake Accuracy'] = results['fake_accuracy']
+        metrics['Overall Accuracy'] = results['overall_accuracy']
 
     for name, data in metrics.items():
         mean_val = np.mean(data)
@@ -304,18 +350,35 @@ def print_statistics(results):
         min_val = np.min(data)
         max_val = np.max(data)
 
-        if 'Accuracy' in name:
+        if 'Rate' in name or 'Accuracy' in name:
             print(f"{name:<30} {mean_val:>13.2%} {std_val:>13.2%} {min_val:>13.2%} {max_val:>13.2%}")
         elif 'Reward' in name and 'Log' not in name:
             print(f"{name:<30} {mean_val:>13.6f} {std_val:>13.6f} {min_val:>13.6f} {max_val:>13.6f}")
         else:
             print(f"{name:<30} {mean_val:>13.2f} {std_val:>13.2f} {min_val:>13.2f} {max_val:>13.2f}")
 
+    # Gate Type Distribution (AND/OR/NOT focus)
     print("\n" + "="*80)
     print("Gate Type Distribution")
     print("="*80)
 
-    if results['gate_types']:
+    # New format: AND/OR/NOT counts
+    if 'and_count' in results:
+        total_and = sum(results['and_count'])
+        total_or = sum(results['or_count'])
+        total_not = sum(results['not_count'])
+        total_other = sum(results['other_count'])
+        total_gates = total_and + total_or + total_not + total_other
+
+        if total_gates > 0:
+            print(f"  {'AND':<10} {total_and:>5} gates ({100*total_and/total_gates:>5.1f}%)")
+            print(f"  {'OR':<10} {total_or:>5} gates ({100*total_or/total_gates:>5.1f}%)")
+            print(f"  {'NOT':<10} {total_not:>5} gates ({100*total_not/total_gates:>5.1f}%)")
+            print(f"  {'Other':<10} {total_other:>5} gates ({100*total_other/total_gates:>5.1f}%)")
+        else:
+            print("  No gates sampled")
+    # Fallback to old format
+    elif results['gate_types']:
         total_gates = sum(results['gate_types'].values())
         for gate_type, count in sorted(results['gate_types'].items(), key=lambda x: x[1], reverse=True):
             percentage = (count / total_gates) * 100
