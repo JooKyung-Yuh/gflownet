@@ -70,7 +70,7 @@ class LGNState:
     # Arity validation
     if not is_valid_arity(gate_type, len(input_indices)):
       if gate_type == GateType.AND:
-        raise ValueError(f"AND gate requires at least 1 inputs, got {len(input_indices)}")
+        raise ValueError(f"AND gate requires at least 2 inputs, got {len(input_indices)}")
       elif gate_type in [GateType.NOT, GateType.BUFFER]:
         raise ValueError(f"{gate_type.value} gate requires exactly 1 input, got {len(input_indices)}")
       else:

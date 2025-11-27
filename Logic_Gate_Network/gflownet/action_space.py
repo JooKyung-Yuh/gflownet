@@ -231,12 +231,12 @@ class LGNActionSpace:
     # Gate types by arity:
     # - 1-input gates: NOT, BUFFER (unary operations)
     # - 2-input gates: 13 gate types (binary operations, excluding AND)
-    # - Variable-arity gates: AND (1+ inputs, all possible combinations)
+    # - Variable-arity gates: AND (2+ inputs, all possible combinations)
     #
     # AND gate special handling:
-    # - Supports 1, 2, 3, ..., n inputs where n = len(available_indices)
+    # - Supports 2, 3, ..., n inputs where n = len(available_indices)
     # - This provides maximum expressiveness for logic gate networks
-    # - Example: With 10 available indices, AND can have C(10,1) + C(10,2) + ... + C(10,10) = 1023 combinations
+    # - Example: With 10 available indices, AND can have C(10,2) + C(10,3) + ... + C(10,10) = 1013 combinations
 
     actions = []
 
@@ -276,17 +276,17 @@ class LGNActionSpace:
             }
             actions.append(action)
 
-    # Generate actions for variable-arity AND gate (1+ inputs)
-    # AND gate is unique: it supports any number of inputs >= 1
+    # Generate actions for variable-arity AND gate (2+ inputs)
+    # AND gate is unique: it supports any number of inputs >= 2
     #
     # If max_and_arity is set (> 0), limit the maximum arity to reduce action space.
-    # Without limit: Total AND actions = C(n,1) + C(n,2) + ... + C(n,n) = 2^n - 1
-    # With limit k:  Total AND actions = C(n,1) + C(n,2) + ... + C(n,k) (much smaller)
+    # Without limit: Total AND actions = C(n,2) + C(n,3) + ... + C(n,n)
+    # With limit k:  Total AND actions = C(n,2) + C(n,3) + ... + C(n,k) (much smaller)
     #
     # Example with n=10:
-    # - No limit (max_and_arity=0): 1023 AND actions
-    # - max_and_arity=2: 55 AND actions (like other binary gates)
-    # - max_and_arity=4: 385 AND actions
+    # - No limit (max_and_arity=0): 1013 AND actions (C(10,2) + ... + C(10,10))
+    # - max_and_arity=2: 45 AND actions (like other binary gates)
+    # - max_and_arity=4: 375 AND actions
     num_available = len(available_indices)
 
     # Determine max arity for AND gates
@@ -295,8 +295,8 @@ class LGNActionSpace:
     else:
         max_arity = num_available  # No limit
 
-    for arity in range(1, max_arity + 1):
-        # For each arity (1, 2, 3, ..., max_arity)
+    for arity in range(2, max_arity + 1):
+        # For each arity (2, 3, 4, ..., max_arity)
         # Generate all combinations of that size
         for input_combination in combinations(available_indices, arity):
             action = {

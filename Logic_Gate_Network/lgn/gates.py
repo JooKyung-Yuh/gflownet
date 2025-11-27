@@ -117,7 +117,7 @@ def apply_gate(gate_type: GateType, inputs: list[int]) -> int:
   # Validate arity
   if not is_valid_arity(gate_type, len(inputs)):
     if gate_type == GateType.AND:
-      raise ValueError(f"AND gate requires at least 1 inputs, got {len(inputs)}")
+      raise ValueError(f"AND gate requires at least 2 inputs, got {len(inputs)}")
     elif gate_type in [GateType.NOT, GateType.BUFFER]:
       raise ValueError(f"{gate_type.value} gate requires exactly 1 input, got {len(inputs)}")
     else:
