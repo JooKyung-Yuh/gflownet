@@ -106,7 +106,8 @@ def main():
     parser.add_argument('--max-gates', type=int, default=15, help='Maximum number of gates')
     parser.add_argument('--iterations', type=int, default=10000, help='Training iterations (gradient steps, recommended: 10000+)')
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size (recommended: 10-100)')
-    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+    parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate for policy (TB paper: 5e-4)')
+    parser.add_argument('--lr-logz', type=float, default=5e-3, help='Learning rate for logZ (TB paper: 5e-3)')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda', 'mps'],
                         help='Device to use (auto=best available, mps=Apple Silicon GPU)')
     parser.add_argument('--node-emb-dim', type=int, default=128)
@@ -156,7 +157,8 @@ def main():
     print(f"  max_gates: {args.max_gates}")
     print(f"  iterations: {args.iterations}")
     print(f"  batch_size: {args.batch_size}")
-    print(f"  learning_rate: {args.lr}")
+    print(f"  learning_rate (policy): {args.lr}")
+    print(f"  learning_rate (logZ): {args.lr_logz}")
     print(f"  data_samples: {args.data_samples}")
     print(f"  test_ratio: {args.test_ratio}")
     print(f"  device: {device}")
@@ -284,13 +286,15 @@ def main():
         init_logZ=0.0,  # Start with Z=1
     )
 
-    # Create optimizer with both policy parameters AND logZ
-    optimizer = torch.optim.Adam(
-        list(policy.parameters()) + [trainer.logZ],
-        lr=args.lr
-    )
+    # Create optimizer with separate learning rates for policy and logZ
+    # TB Paper recommends: policy lr = 5e-4, logZ lr = 5e-3 (10x higher)
+    optimizer = torch.optim.Adam([
+        {'params': policy.parameters(), 'lr': args.lr},
+        {'params': [trainer.logZ], 'lr': args.lr_logz}
+    ])
     trainer.optimizer = optimizer
     print(f"  ✅ Trainer created (TB Loss with logZ parameter)")
+    print(f"     Policy lr: {args.lr}, logZ lr: {args.lr_logz}")
 
     # Create evaluation function for FN/FP trend tracking
     def create_eval_fn(policy, mdp, action_space, test_real, test_fake, num_samples):
