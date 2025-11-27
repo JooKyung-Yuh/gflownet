@@ -1,29 +1,33 @@
 """
 Training Loop for Logic Gate Network GFlowNet.
 
-This module implements the Trajectory Balance (TB) training loop for GFlowNet.
-It handles:
-1. Trajectory sampling (forward passes through the environment)
-2. Parent computation (backward transitions using LGNMDP)
-3. TB loss computation (inflow/outflow matching)
-4. Optimization and logging
+This module implements Trajectory Balance (TB) Loss for GFlowNet training.
 
-The implementation follows the pattern from molecules but simplified for LGN.
+TB Loss Formula (notion.md Eq. 4, with uniform P_B assumption):
+    Loss = (logZ + log P_F(τ) - log R(x))²
+
+where:
+- logZ: Learnable log partition function parameter
+- log P_F(τ): Sum of log forward policy probabilities along trajectory
+- log R(x): Log reward at terminal state
 
 Key Features:
 -------------
-- Trajectory Balance (TB) loss computation
-- Balanced loss (terminal vs flow states weighted differently)
+- Learnable logZ parameter (nn.Parameter)
+- Trajectory-level loss computation
 - Gradient clipping for training stability
-- Comprehensive logging (loss metrics, rewards, etc.)
+- Comprehensive logging (loss, logZ, log_pf, log_reward)
 
 Reference:
 ----------
-Based on molecules/gflownet.py training loop, adapted for LGN's structure.
+Based on torchgfn TB implementation and notion.md specifications.
 """
 
 import torch
-from typing import Dict, Any, List, Tuple, Callable, Union
+import torch.nn as nn
+import numpy as np
+from typing import Dict, List, Tuple, Callable, Union
+from dataclasses import dataclass
 import time
 from lgn.network import LGNState
 from .policy_network import LGNPolicyNetwork
@@ -32,61 +36,57 @@ from .lgn_mdp import LGNMDP
 from .action_space import LGNActionSpace
 
 
+@dataclass
+class TBTrajectory:
+    """Trajectory data for TB Loss computation."""
+    states: List[LGNState]      # s0, s1, ..., sT (states before each action)
+    actions: List[Dict]         # a0, a1, ..., aT-1 (actions including stop)
+    log_reward: float           # log R(terminal_state)
+    terminal_state: LGNState    # Final state for reward computation
+
+
 class LGNTrainer:
     """
-    Trainer for Logic Gate Network GFlowNet.
+    Trainer for Logic Gate Network GFlowNet with TB Loss.
 
-    This class handles the complete training loop for GFlowNet, including:
+    Implements Trajectory Balance (TB) Loss from notion.md Eq. 4:
+        Loss = (logZ + log P_F(τ) - log R(x))²
+
+    This class handles:
     - Trajectory sampling using the policy
-    - TB loss computation
-    - Optimization
+    - TB loss computation with learnable logZ
+    - Optimization (policy + logZ parameters)
     - Logging and metrics
 
     Parameters:
     -----------
-    policy : LGNPolicyNetwork
+    policy : LGNPolicyNetwork or LGNGNNPolicy
         The policy network that learns Q(s, a) values
     mdp : LGNMDP
-        MDP wrapper providing parent_transitions()
+        MDP wrapper (used for num_inputs and max_gates)
     action_space : LGNActionSpace
         Action space providing get_valid_actions()
     reward_fn : Callable[[LGNState], float]
-        Reward function R(s) for terminal states
+        Reward function R(s) for terminal states (returns actual reward, not log)
     optimizer : torch.optim.Optimizer
-        Optimizer for training (e.g., Adam)
+        Optimizer for training (should include trainer.logZ parameter)
     device : torch.device
         Device to run training on (cpu or cuda)
-    balanced_loss : bool
-        Whether to use balanced loss (default: True)
-    leaf_coef : float
-        Coefficient for terminal state loss in balanced mode (default: 10.0)
-    log_reg_c : float
-        Small constant for numerical stability in logs (default: 1e-6)
+    init_logZ : float
+        Initial value for logZ parameter (default: 0.0, meaning Z=1)
     clip_grad : float
         Gradient clipping value (default: 10.0, 0 to disable)
 
     Example:
     --------
-    >>> policy = LGNPolicyNetwork(num_inputs=10, max_gates=15)
-    >>> mdp = LGNMDP(num_inputs=10, max_gates=15)
-    >>> action_space = LGNActionSpace(num_inputs=10, max_gates=15)
-    >>> reward_fn = lambda lgn: compute_reward(lgn)
-    >>> optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
-    >>>
-    >>> trainer = LGNTrainer(
-    ...     policy=policy,
-    ...     mdp=mdp,
-    ...     action_space=action_space,
-    ...     reward_fn=reward_fn,
-    ...     optimizer=optimizer,
-    ...     device=torch.device('cpu')
+    >>> policy = LGNGNNPolicy(num_inputs=10, max_gates=15)
+    >>> trainer = LGNTrainer(policy=policy, mdp=mdp, ...)
+    >>> # Important: Add logZ to optimizer
+    >>> optimizer = torch.optim.Adam(
+    ...     list(policy.parameters()) + [trainer.logZ],
+    ...     lr=1e-3
     ... )
-    >>>
-    >>> # Train for 1000 steps
-    >>> for i in range(1000):
-    >>>     loss, metrics = trainer.train_step(batch_size=32)
-    >>>     if i % 100 == 0:
-    >>>         print(f"Step {i}: Loss = {loss:.4f}")
+    >>> trainer.optimizer = optimizer
     """
 
     def __init__(
@@ -97,9 +97,7 @@ class LGNTrainer:
         reward_fn: Callable[[LGNState], float],
         optimizer: torch.optim.Optimizer,
         device: torch.device,
-        balanced_loss: bool = True,
-        leaf_coef: float = 10.0,
-        log_reg_c: float = 1e-6,
+        init_logZ: float = 0.0,
         clip_grad: float = 10.0,
     ):
         self.policy = policy
@@ -108,24 +106,22 @@ class LGNTrainer:
         self.reward_fn = reward_fn
         self.optimizer = optimizer
         self.device = device
-        self.balanced_loss = balanced_loss
-        self.leaf_coef = leaf_coef
-        self.log_reg_c = log_reg_c
         self.clip_grad = clip_grad
 
         # Move policy to device
         self.policy.to(device)
 
+        # Learnable logZ parameter (TB Loss)
+        # logZ = 0.0 means Z = 1.0 (partition function starts at 1)
+        self.logZ = nn.Parameter(torch.tensor(init_logZ, dtype=torch.float32, device=device))
+
         # Training statistics
         self.train_losses = []
         self.step_count = 0
 
-    def sample_trajectory(self) -> List[Tuple[Tuple[LGNState, ...], Tuple[Dict[str, Any], ...], float, LGNState, bool]]:
+    def sample_trajectory(self) -> TBTrajectory:
         """
-        Sample a single trajectory using the current policy.
-
-        This follows the Grid/Molecules pattern: compute parent_transitions()
-        DURING sampling, immediately after each action is applied.
+        Sample a single trajectory for TB Loss computation.
 
         Sampling process:
         -----------------
@@ -134,127 +130,143 @@ class LGNTrainer:
            - Get valid actions from action_space
            - Compute Q-values for all actions (gate additions + stop)
            - Sample action proportional to exp(Q) (Boltzmann sampling)
+           - Store (state, action) pair
            - Apply action to get next state
-           - IMMEDIATELY compute parents of new state (KEY: done during sampling)
-           - Store (parents, actions, reward, resulting_state, done)
         3. Repeat until stop action is sampled
-        4. Evaluate final state with reward_fn
+        4. Compute log_reward from terminal state
 
         Returns:
         --------
-        List[Tuple[Tuple[LGNState, ...], Tuple[Dict[str, Any], ...], float, LGNState, bool]]
-            List of transition tuples for TB loss computation.
-            Each tuple contains:
-            - parents: Tuple of all parent states that can transition to resulting_state
-            - actions: Tuple of actions taken from each parent (same length as parents)
-            - reward: Reward at resulting_state (0 for non-terminal, R(s) for terminal)
-            - resulting_state: The state reached after applying action
-            - done: Whether resulting_state is terminal
+        TBTrajectory
+            Contains states, actions, log_reward, and terminal_state
         """
-        trajectory = []
+        states = []
+        actions = []
         lgn = LGNState(num_inputs=self.mdp.num_inputs, max_gates=self.mdp.max_gates)
 
         with torch.no_grad():  # Don't track gradients during sampling
             while True:
+                # Store current state before action
+                states.append(lgn.copy())
+
                 # Get valid actions from current state
-                actions = self.action_space.get_valid_actions(lgn)
+                valid_actions = self.action_space.get_valid_actions(lgn)
 
                 # Separate gate actions and stop action
-                gate_actions = [a for a in actions if 'gate_type' in a]
+                gate_actions = [a for a in valid_actions if 'gate_type' in a]
+                has_stop = any('action' in a and a['action'] == 'stop' for a in valid_actions)
 
                 # Compute Q-values
                 action_q, stop_q = self.policy.forward_policy(lgn, gate_actions)
 
                 # Combine Q-values for sampling
-                if len(gate_actions) > 0:
+                if len(gate_actions) > 0 and has_stop:
                     all_q_values = torch.cat([action_q, stop_q.unsqueeze(0)])
                     all_actions = gate_actions + [{'action': 'stop'}]
+                elif len(gate_actions) > 0:
+                    all_q_values = action_q
+                    all_actions = gate_actions
                 else:
                     # No valid gate actions, must stop
                     all_q_values = stop_q.unsqueeze(0)
                     all_actions = [{'action': 'stop'}]
 
-                # Sample action using Boltzmann distribution: P(a) proportional to exp(Q(s,a))
-                # Use cumulative distribution method to avoid multinomial's 2^24 category limit
-                logits = all_q_values
-                probs = torch.softmax(logits, dim=0)
-
-                # Cumulative distribution sampling (avoids multinomial limit)
+                # Sample action using Boltzmann distribution
+                probs = torch.softmax(all_q_values, dim=0)
                 cumsum = torch.cumsum(probs, dim=0)
                 u = torch.rand(1, device=probs.device)
                 action_idx = int(torch.searchsorted(cumsum, u).item())
-
-                # Clamp to valid range (searchsorted can return len(cumsum) if u >= cumsum[-1])
                 action_idx = min(action_idx, len(all_actions) - 1)
 
                 sampled_action = all_actions[action_idx]
+                actions.append(sampled_action)
 
                 # Check if stop action
                 is_stop = 'action' in sampled_action and sampled_action['action'] == 'stop'
 
                 if is_stop:
-                    # Terminal transition: stop action taken from current state
+                    # Compute log reward at terminal state
                     reward = self.reward_fn(lgn)
-
-                    # Compute parents of terminal state (with stop action)
-                    # The terminal state is lgn itself (stop doesn't change state)
-                    parents_list, actions_list = self.mdp.parent_transitions(lgn, used_stop_action=True)
-
-                    # Store: (parents, actions, reward, resulting_state, done)
-                    trajectory.append((
-                        tuple(parents_list),
-                        tuple(actions_list),
-                        reward,
-                        lgn.copy(),
-                        True
-                    ))
+                    # reward_fn returns actual reward, convert to log
+                    log_reward = np.log(reward + 1e-8)
                     break
                 else:
-                    # Non-terminal transition: gate addition
-                    # Type narrowing: sampled_action is a gate action
-                    assert 'gate_type' in sampled_action and 'input_indices' in sampled_action
-
-                    # Apply action to get next state
+                    # Apply action
                     lgn.add_gate(sampled_action['gate_type'], sampled_action['input_indices'])
 
-                    # KEY: Compute parents of the NEW state (after action applied)
-                    # This is the Grid/Molecules pattern - parents computed during sampling
-                    parents_list, actions_list = self.mdp.parent_transitions(lgn, used_stop_action=False)
+        return TBTrajectory(
+            states=states,
+            actions=actions,
+            log_reward=log_reward,
+            terminal_state=lgn.copy()
+        )
 
-                    # Store: (parents leading to lgn, their actions, reward=0, resulting_state=lgn, done=False)
-                    trajectory.append((
-                        tuple(parents_list),
-                        tuple(actions_list),
-                        0.0,
-                        lgn.copy(),
-                        False
-                    ))
+    def _find_action_index(self, valid_actions: List[Dict], target_action: Dict) -> int:
+        """Find index of target action in valid_actions list."""
+        for i, action in enumerate(valid_actions):
+            if action == target_action:
+                return i
+            # Handle stop action comparison
+            if ('action' in action and action.get('action') == 'stop' and
+                'action' in target_action and target_action.get('action') == 'stop'):
+                return i
+            # Handle gate action comparison
+            if ('gate_type' in action and 'gate_type' in target_action and
+                action.get('gate_type') == target_action.get('gate_type') and
+                action.get('input_indices') == target_action.get('input_indices')):
+                return i
+        raise ValueError(f"Action {target_action} not found in valid actions")
 
-        return trajectory
-
-    def sample_batch(self, batch_size: int) -> Tuple[
-        List[LGNState],  # parent states
-        torch.Tensor,     # parent batch indices
-        List[Dict[str, Any]],  # actions
-        torch.Tensor,     # rewards
-        List[LGNState],  # resulting states
-        torch.Tensor,     # done flags
-    ]:
+    def compute_tb_loss(self, trajectory: TBTrajectory) -> Tuple[torch.Tensor, float, float]:
         """
-        Sample a batch of trajectories and convert to training format.
+        Compute TB Loss for a single trajectory.
 
-        This follows the Grid/Molecules pattern: trajectories already contain
-        parent information (computed during sampling), so we just flatten them.
+        TB Loss Formula (notion.md Eq. 4, uniform P_B assumption):
+            Loss = (logZ + log P_F(τ) - log R(x))²
 
-        Format matches molecules/gflownet.py and grid/toy_grid_dag.py:
-        ---------------------------------------------------------------
-        For each transition (parent -> action -> state):
-        - p: List of parent states (flattened from all trajectories)
-        - pb: Parent batch index (which resulting state this parent leads to)
-        - a: Action taken from parent
-        - r: Reward at resulting state
-        - s: Resulting state
-        - d: Done flag (0 for non-terminal, 1 for terminal)
+        where:
+            log P_F(τ) = Σ_t log P_F(a_t | s_t)
+
+        Parameters:
+        -----------
+        trajectory : TBTrajectory
+            Sampled trajectory with states, actions, and log_reward
+
+        Returns:
+        --------
+        Tuple[torch.Tensor, float, float]
+            - loss: TB loss tensor (scalar)
+            - log_pf: Total log forward probability (for logging)
+            - log_reward: Log reward (for logging)
+        """
+        # Compute log P_F(τ) = Σ_t log P_F(a_t | s_t)
+        total_log_pf = torch.tensor(0.0, device=self.device)
+
+        for state, action in zip(trajectory.states, trajectory.actions):
+            # Get all valid actions from this state
+            valid_actions = self.action_space.get_valid_actions(state)
+
+            # Compute log probabilities for all actions
+            log_probs = self.policy.compute_action_logprobs(state, valid_actions, self.device)
+
+            # Find index of the action that was taken
+            action_idx = self._find_action_index(valid_actions, action)
+
+            # Add log P_F(a_t | s_t)
+            total_log_pf = total_log_pf + log_probs[action_idx]
+
+        # Convert log_reward to tensor
+        log_reward = torch.tensor(trajectory.log_reward, device=self.device)
+
+        # TB Loss: (logZ + log P_F - log R)²
+        score = total_log_pf - log_reward
+        loss = (self.logZ + score).pow(2)
+
+        return loss, total_log_pf.item(), trajectory.log_reward
+
+    def sample_batch(self, batch_size: int) -> List[TBTrajectory]:
+        """
+        Sample a batch of trajectories.
 
         Parameters:
         -----------
@@ -263,157 +275,25 @@ class LGNTrainer:
 
         Returns:
         --------
-        Tuple of (p, pb, a, r, s, d) as described above
+        List[TBTrajectory]
+            List of sampled trajectories
         """
-        p_list = []  # parent states
-        pb_list = []  # parent batch indices
-        a_list = []  # actions
-        r_list = []  # rewards
-        s_list = []  # resulting states
-        d_list = []  # done flags
-
-        for traj_idx in range(batch_size):
-            trajectory = self.sample_trajectory()
-
-            # Each trajectory entry is: (parents_tuple, actions_tuple, reward, state, done)
-            # where parents and actions were already computed during sampling
-            for parents_tuple, actions_tuple, reward, state, done in trajectory:
-                # parents_tuple and actions_tuple have the same length
-                # (one action per parent leading to the resulting state)
-
-                # For each parent-action pair leading to this state
-                for parent, action in zip(parents_tuple, actions_tuple):
-                    p_list.append(parent)
-                    pb_list.append(len(s_list))  # This parent leads to s_list[len(s_list)]
-                    a_list.append(action)
-
-                # Add the resulting state once (parents map to it via pb)
-                s_list.append(state)
-                r_list.append(reward)
-                d_list.append(1.0 if done else 0.0)
-
-        # Convert to tensors
-        pb = torch.tensor(pb_list, dtype=torch.long, device=self.device)
-        r = torch.tensor(r_list, dtype=torch.float32, device=self.device)
-        d = torch.tensor(d_list, dtype=torch.float32, device=self.device)
-
-        return p_list, pb, a_list, r, s_list, d
-
-    def compute_tb_loss(
-        self,
-        p_list: List[LGNState],
-        pb: torch.Tensor,
-        a_list: List[Dict[str, Any]],
-        r: torch.Tensor,
-        s_list: List[LGNState],
-        d: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """
-        Compute Trajectory Balance (TB) loss.
-
-        TB Loss Formula:
-        ----------------
-        For each transition (parent -> action -> state):
-            inflow = log(sum_{parent, a} exp(Q(parent, a)))
-            outflow = log(R(s) + sum_{a'} exp(Q(s, a')))
-            loss = (inflow - outflow)^2
-
-        Balanced Loss:
-        --------------
-        If balanced_loss=True, separately weight terminal vs non-terminal states:
-            term_loss = mean((inflow - outflow)^2  for terminal states)
-            flow_loss = mean((inflow - outflow)^2  for non-terminal states)
-            loss = term_loss * leaf_coef + flow_loss
-
-        This gives terminal states more weight (default 10x), which is critical
-        for environments with sparse rewards (like LGN).
-
-        Parameters:
-        -----------
-        p_list : List[LGNState]
-            Parent states
-        pb : torch.Tensor
-            Parent batch indices (shape: [num_parents])
-        a_list : List[Dict[str, Any]]
-            Actions taken from parents
-        r : torch.Tensor
-            Rewards (shape: [num_transitions])
-        s_list : List[LGNState]
-            Resulting states (shape: [num_transitions])
-        d : torch.Tensor
-            Done flags (shape: [num_transitions])
-
-        Returns:
-        --------
-        Tuple[torch.Tensor, Dict[str, float]]
-            - loss: Scalar loss tensor
-            - metrics: Dictionary with 'term_loss', 'flow_loss', etc.
-        """
-        ntransitions = len(s_list)
-
-        # ===== INFLOW COMPUTATION =====
-        # Compute Q(parent, action) for each parent
-        qsa_p = torch.stack([
-            self.policy.compute_q_value_for_action(parent, action)
-            for parent, action in zip(p_list, a_list)
-        ])
-
-        # Sum exp(Q(parent, action)) for all parents leading to same state
-        # This uses index_add_ to group parents by their resulting state
-        exp_inflow = torch.zeros(ntransitions, dtype=torch.float32, device=self.device)
-        exp_inflow = exp_inflow.index_add_(0, pb, torch.exp(qsa_p))
-        inflow = torch.log(exp_inflow + self.log_reg_c)
-
-        # ===== OUTFLOW COMPUTATION =====
-        # For each state, compute sum of exp(Q(s, a)) over all valid actions
-        exp_outflow = torch.stack([
-            self.policy.sum_exp_q_values(s, self.action_space.get_valid_actions(s))
-            for s in s_list
-        ])
-
-        # outflow = log(R + sum exp(Q(s, a)) * (1 - done))
-        # Terminal states: log(R), Non-terminal: log(sum exp(Q))
-        outflow_plus_r = torch.log(self.log_reg_c + r + exp_outflow * (1 - d))
-
-        # ===== LOSS COMPUTATION =====
-        # Squared difference between inflow and outflow
-        losses = (inflow - outflow_plus_r).pow(2)
-
-        if self.balanced_loss:
-            # Separate terminal and flow losses
-            term_loss = (losses * d).sum() / (d.sum() + 1e-20)
-            flow_loss = (losses * (1 - d)).sum() / ((1 - d).sum() + 1e-20)
-            loss = term_loss * self.leaf_coef + flow_loss
-        else:
-            # Uniform weighting
-            term_loss = (losses * d).sum() / (d.sum() + 1e-20)
-            flow_loss = (losses * (1 - d)).sum() / ((1 - d).sum() + 1e-20)
-            loss = losses.mean()
-
-        # Metrics for logging
-        metrics = {
-            'loss': loss.item(),
-            'term_loss': term_loss.item(),
-            'flow_loss': flow_loss.item(),
-            'mean_reward': r[d == 1].mean().item() if (d == 1).any() else 0.0,
-            'num_terminals': (d == 1).sum().item(),
-            'num_transitions': ntransitions,
-        }
-
-        return loss, metrics
+        return [self.sample_trajectory() for _ in range(batch_size)]
 
     def train_step(self, batch_size: int) -> Tuple[float, Dict[str, float]]:
         """
-        Execute one training step.
+        Execute one training step with TB Loss.
+
+        TB Loss = mean over trajectories of (logZ + log P_F(τ) - log R(x))²
 
         Steps:
         ------
         1. Sample batch of trajectories
-        2. Compute TB loss
-        3. Backpropagate
-        4. Clip gradients (if enabled)
-        5. Update parameters
-        6. Log metrics
+        2. Compute TB loss for each trajectory
+        3. Average losses
+        4. Backpropagate
+        5. Clip gradients (if enabled)
+        6. Update parameters (policy + logZ)
 
         Parameters:
         -----------
@@ -426,21 +306,47 @@ class LGNTrainer:
             - loss: Scalar loss value
             - metrics: Dictionary of training metrics
         """
-        # Sample batch
-        p_list, pb, a_list, r, s_list, d = self.sample_batch(batch_size)
+        # Sample batch of trajectories
+        trajectories = self.sample_batch(batch_size)
 
-        # Compute loss
-        loss, metrics = self.compute_tb_loss(p_list, pb, a_list, r, s_list, d)
+        # Compute TB loss for each trajectory
+        losses = []
+        log_pfs = []
+        log_rewards = []
+
+        for traj in trajectories:
+            loss, log_pf, log_reward = self.compute_tb_loss(traj)
+            losses.append(loss)
+            log_pfs.append(log_pf)
+            log_rewards.append(log_reward)
+
+        # Average loss over batch
+        total_loss = torch.stack(losses).mean()
 
         # Optimize
         self.optimizer.zero_grad()
-        loss.backward()
+        total_loss.backward()
 
-        # Gradient clipping
+        # Gradient clipping (include logZ in clipping)
         if self.clip_grad > 0:
-            torch.nn.utils.clip_grad_value_(self.policy.parameters(), self.clip_grad)
+            all_params = list(self.policy.parameters()) + [self.logZ]
+            torch.nn.utils.clip_grad_value_(all_params, self.clip_grad)
 
         self.optimizer.step()
+
+        # Compute metrics
+        mean_log_pf = np.mean(log_pfs)
+        mean_log_reward = np.mean(log_rewards)
+        mean_reward = np.exp(mean_log_reward)  # Convert back to actual reward
+
+        metrics = {
+            'loss': total_loss.item(),
+            'logZ': self.logZ.item(),
+            'log_pf': mean_log_pf,
+            'log_reward': mean_log_reward,
+            'mean_reward': mean_reward,
+            'num_trajectories': batch_size,
+        }
 
         # Update statistics
         self.step_count += 1
@@ -459,7 +365,7 @@ class LGNTrainer:
         eval_every: int = 100,
     ) -> Dict[str, List[float]]:
         """
-        Run full training loop.
+        Run full training loop with TB Loss.
 
         Parameters:
         -----------
@@ -493,8 +399,9 @@ class LGNTrainer:
 
         all_metrics = {
             'loss': [],
-            'term_loss': [],
-            'flow_loss': [],
+            'logZ': [],
+            'log_pf': [],
+            'log_reward': [],
             'mean_reward': [],
         }
 
@@ -518,16 +425,18 @@ class LGNTrainer:
 
             # Log metrics
             all_metrics['loss'].append(metrics['loss'])
-            all_metrics['term_loss'].append(metrics['term_loss'])
-            all_metrics['flow_loss'].append(metrics['flow_loss'])
+            all_metrics['logZ'].append(metrics['logZ'])
+            all_metrics['log_pf'].append(metrics['log_pf'])
+            all_metrics['log_reward'].append(metrics['log_reward'])
             all_metrics['mean_reward'].append(metrics['mean_reward'])
 
-            # Real-time wandb logging
+            # Real-time wandb logging (with log-prefixed names)
             if wandb_log:
                 wandb.log({
-                    "train/loss": metrics['loss'],
-                    "train/terminal_loss": metrics['term_loss'],
-                    "train/flow_loss": metrics['flow_loss'],
+                    "train/tb_loss": metrics['loss'],
+                    "train/logZ": metrics['logZ'],
+                    "train/log_pf": metrics['log_pf'],
+                    "train/log_reward": metrics['log_reward'],
                     "train/mean_reward": metrics['mean_reward'],
                     "train/iter_time": iter_time,
                 }, step=i)
@@ -542,15 +451,15 @@ class LGNTrainer:
             if verbose and (i % log_every == 0 or i == num_iterations - 1):
                 elapsed = time.time() - start_time
                 iter_loss = metrics['loss']
-                iter_term = metrics['term_loss']
-                iter_flow = metrics['flow_loss']
-                iter_reward = metrics['mean_reward']
+                iter_logZ = metrics['logZ']
+                iter_log_pf = metrics['log_pf']
+                iter_log_reward = metrics['log_reward']
                 # Clear the progress line and print full metrics
                 print(f"\r  Step {i+1}/{num_iterations} | "
                       f"Loss: {iter_loss:.4f} | "
-                      f"Term: {iter_term:.4f} | "
-                      f"Flow: {iter_flow:.4f} | "
-                      f"Reward: {iter_reward:.4f} | "
+                      f"logZ: {iter_logZ:.4f} | "
+                      f"log_pf: {iter_log_pf:.4f} | "
+                      f"log_R: {iter_log_reward:.4f} | "
                       f"Iter: {iter_time:.1f}s | "
                       f"Total: {elapsed:.1f}s")
 
