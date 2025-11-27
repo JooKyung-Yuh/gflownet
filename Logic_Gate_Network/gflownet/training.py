@@ -3,7 +3,7 @@ Training Loop for Logic Gate Network GFlowNet.
 
 This module implements Trajectory Balance (TB) Loss for GFlowNet training.
 
-TB Loss Formula (notion.md Eq. 4, with uniform P_B assumption):
+TB Loss Formula:
     Loss = (logZ + log P_F(τ) - log R(x))²
 
 where:
@@ -260,9 +260,10 @@ class LGNTrainer:
 
         # TB Loss: (logZ + log P_F - log R)²
         score = total_log_pf - log_reward
-        loss = (self.logZ + score).pow(2)
+        
+        #self.logZ = - score.mean(0)
 
-        return loss, total_log_pf.item(), trajectory.log_reward
+        return score, total_log_pf.item(), trajectory.log_reward
 
     def sample_batch(self, batch_size: int) -> List[TBTrajectory]:
         """
@@ -310,17 +311,26 @@ class LGNTrainer:
         trajectories = self.sample_batch(batch_size)
 
         # Compute TB loss for each trajectory
-        losses = []
+        scores = []
         log_pfs = []
         log_rewards = []
 
         for traj in trajectories:
-            loss, log_pf, log_reward = self.compute_tb_loss(traj)
-            losses.append(loss)
+            score, log_pf, log_reward = self.compute_tb_loss(traj)
+            scores.append(score)
             log_pfs.append(log_pf)
             log_rewards.append(log_reward)
 
         # Average loss over batch
+        scores_tensor = torch.stack(scores)
+        logZ = -scores_tensor.mean().detach()
+        
+        losses = [(logZ + score).pow(2) for score in scores]
+        
+        # scores_tensor = torch.stack(scores)
+        # losses = (self.logZ + scores_tensor).pow(2)
+        # total_loss = losses.mean()
+        
         total_loss = torch.stack(losses).mean()
 
         # Optimize
@@ -341,7 +351,8 @@ class LGNTrainer:
 
         metrics = {
             'loss': total_loss.item(),
-            'logZ': self.logZ.item(),
+            # 'logZ': self.logZ.item(),  # 기존: learnable parameter
+            'logZ': logZ.item(),  # 새로운 방식: batch에서 계산한 logZ
             'log_pf': mean_log_pf,
             'log_reward': mean_log_reward,
             'mean_reward': mean_reward,
@@ -432,8 +443,10 @@ class LGNTrainer:
 
             # Real-time wandb logging (with log-prefixed names)
             if wandb_log:
+                log_loss = np.log(metrics['loss'] + 1e-8)
                 wandb.log({
                     "train/tb_loss": metrics['loss'],
+                    "train/log_tb_loss": log_loss,
                     "train/logZ": metrics['logZ'],
                     "train/log_pf": metrics['log_pf'],
                     "train/log_reward": metrics['log_reward'],
@@ -451,12 +464,13 @@ class LGNTrainer:
             if verbose and (i % log_every == 0 or i == num_iterations - 1):
                 elapsed = time.time() - start_time
                 iter_loss = metrics['loss']
+                iter_log_loss = np.log(iter_loss + 1e-8)
                 iter_logZ = metrics['logZ']
                 iter_log_pf = metrics['log_pf']
                 iter_log_reward = metrics['log_reward']
                 # Clear the progress line and print full metrics
                 print(f"\r  Step {i+1}/{num_iterations} | "
-                      f"Loss: {iter_loss:.4f} | "
+                      f"log_Loss: {iter_log_loss:.4f} | "
                       f"logZ: {iter_logZ:.4f} | "
                       f"log_pf: {iter_log_pf:.4f} | "
                       f"log_R: {iter_log_reward:.4f} | "

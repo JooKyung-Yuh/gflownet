@@ -28,10 +28,10 @@
 
 experiment:
   # Experiment name (used for logging, saving results, etc.)
-  name: "baseline_experiment"
+  name: 'baseline_experiment'
 
   # Brief description of this configuration
-  description: "Default hyperparameters for baseline GFlowNet training"
+  description: 'Default hyperparameters for baseline GFlowNet training'
 
   # Random seed for reproducibility
   # Set to a fixed value (e.g., 42) for reproducible experiments
@@ -39,8 +39,7 @@ experiment:
   seed: 42
 
   # Version tag (useful for tracking config changes)
-  version: "1.0"
-
+  version: '1.0'
 
 # -----------------------------------------------------------------------------
 # Reward Function Hyperparameters
@@ -56,16 +55,7 @@ reward_function:
   #
   # Higher C → Prioritize correctly classifying Real samples
   # Lower C → Prioritize correctly rejecting Fake samples
-  #
-  # Typical range: [0.1, 10.0]
-  # Recommended starting value: 1.0 (equal weight)
-  #
-  # Example values:
-  #   - C = 0.5: Fake rejection is 2x more important than Real accuracy
-  #   - C = 1.0: Equal importance (balanced)
-  #   - C = 2.0: Real accuracy is 2x more important than Fake rejection
-  C: 1.0
-
+  C: 10.0
 
   # epsilon: Numerical stability constant
   # ---------------------------------------
@@ -87,7 +77,6 @@ reward_function:
   #   - epsilon = 1e-6:  Fake term = -log(1e-6) ≈ -13.8
   #   - epsilon = 1e-10: Fake term = -log(1e-10) ≈ -23.0
   epsilon: 1.0e-6
-
 
   # lambda_complexity: Complexity penalty weight
   # ----------------------------------------------
@@ -115,7 +104,6 @@ reward_function:
   #   - For maximum accuracy: use lower lambda (0.01-0.1)
   lambda_complexity: 0.1
 
-
 # -----------------------------------------------------------------------------
 # Logic Gate Network (LGN) Configuration
 # -----------------------------------------------------------------------------
@@ -132,7 +120,6 @@ lgn_network:
   # Typical range: [5, 100]
   # Default: 10
   num_inputs: 10
-
 
   # max_gates: Maximum number of gates allowed
   # --------------------------------------------
@@ -155,7 +142,6 @@ lgn_network:
   #   - For production: use higher values (20-50)
   max_gates: 15
 
-
 # -----------------------------------------------------------------------------
 # Data Configuration (Optional)
 # -----------------------------------------------------------------------------
@@ -168,9 +154,8 @@ data:
   expected_fake_samples: 1000
 
   # Data source information (for reproducibility)
-  real_data_source: "rule_generator_v1"
-  fake_data_source: "rule_generator_v1"
-
+  real_data_source: 'rule_generator_v1'
+  fake_data_source: 'rule_generator_v1'
 
 # -----------------------------------------------------------------------------
 # Preset Configurations (Examples)
@@ -187,33 +172,32 @@ data:
 
 presets:
   baseline:
-    C: 1.0
+    C: 10.0
     epsilon: 1.0e-6
     lambda_complexity: 0.1
     num_inputs: 10
     max_gates: 15
 
   high_accuracy:
-    C: 2.0                    # Prioritize Real accuracy
-    epsilon: 1.0e-10          # More precision
-    lambda_complexity: 0.01   # Allow complex networks
+    C: 2.0 # Prioritize Real accuracy
+    epsilon: 1.0e-10 # More precision
+    lambda_complexity: 0.01 # Allow complex networks
     num_inputs: 10
-    max_gates: 30             # Allow larger networks
+    max_gates: 30 # Allow larger networks
 
   high_simplicity:
-    C: 1.0
+    C: 10.0
     epsilon: 1.0e-6
-    lambda_complexity: 0.5    # Strong complexity penalty
+    lambda_complexity: 0.5 # Strong complexity penalty
     num_inputs: 10
-    max_gates: 10             # Limit network size
+    max_gates: 10 # Limit network size
 
   fast_prototype:
-    C: 1.0
+    C: 10.0
     epsilon: 1.0e-6
     lambda_complexity: 0.2
     num_inputs: 10
-    max_gates: 5              # Very small networks for quick testing
-
+    max_gates: 5 # Very small networks for quick testing
 
 # =============================================================================
 # Configuration Notes
