@@ -77,7 +77,7 @@ def is_valid_arity(gate_type: GateType, num_inputs: int) -> bool:
   """
   # Validate input count based on gate type
   if gate_type == GateType.AND:
-    if not (1 <= num_inputs):
+    if not (2 <= num_inputs):
       return False
   elif gate_type in [GateType.NOT, GateType.BUFFER]:
     if num_inputs != 1:
