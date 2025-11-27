@@ -271,19 +271,26 @@ def main():
 
     # Step 4: Create trainer
     print(f"\n[4/5] Creating trainer...")
-    optimizer = torch.optim.Adam(policy.parameters(), lr=args.lr)
 
+    # Create trainer first (to get logZ parameter)
+    # Note: optimizer will be set after trainer creation
     trainer = LGNTrainer(
         policy=policy,
         mdp=mdp,
         action_space=action_space,
         reward_fn=compute_reward,
-        optimizer=optimizer,
+        optimizer=None,  # Will be set below
         device=device,
-        balanced_loss=True,
-        leaf_coef=10.0
+        init_logZ=0.0,  # Start with Z=1
     )
-    print(f"  ✅ Trainer created")
+
+    # Create optimizer with both policy parameters AND logZ
+    optimizer = torch.optim.Adam(
+        list(policy.parameters()) + [trainer.logZ],
+        lr=args.lr
+    )
+    trainer.optimizer = optimizer
+    print(f"  ✅ Trainer created (TB Loss with logZ parameter)")
 
     # Create evaluation function for FN/FP trend tracking
     def create_eval_fn(policy, mdp, action_space, test_real, test_fake, num_samples):
@@ -381,11 +388,12 @@ def main():
     print("Training Completed! ✅")
     print("=" * 80)
 
-    # Print results
-    print("\nFinal Metrics:")
-    print(f"  Loss: {metrics['loss'][-1]:.4f}")
-    print(f"  Terminal Loss: {metrics['term_loss'][-1]:.4f}")
-    print(f"  Flow Loss: {metrics['flow_loss'][-1]:.4f}")
+    # Print results (TB Loss metrics)
+    print("\nFinal Metrics (TB Loss):")
+    print(f"  TB Loss: {metrics['loss'][-1]:.4f}")
+    print(f"  logZ: {metrics['logZ'][-1]:.4f}")
+    print(f"  log P_F: {metrics['log_pf'][-1]:.4f}")
+    print(f"  log R: {metrics['log_reward'][-1]:.4f}")
     print(f"  Mean Reward: {metrics['mean_reward'][-1]:.4f}")
 
     # Loss trend
@@ -399,9 +407,10 @@ def main():
     # Log final summary to wandb (real-time logging already done during training)
     if use_wandb:
         wandb.log({
-            "final/loss": metrics['loss'][-1],
-            "final/terminal_loss": metrics['term_loss'][-1],
-            "final/flow_loss": metrics['flow_loss'][-1],
+            "final/tb_loss": metrics['loss'][-1],
+            "final/logZ": metrics['logZ'][-1],
+            "final/log_pf": metrics['log_pf'][-1],
+            "final/log_reward": metrics['log_reward'][-1],
             "final/mean_reward": metrics['mean_reward'][-1],
             "final/loss_improvement": metrics['loss'][0] - metrics['loss'][-1],
         })
@@ -436,47 +445,47 @@ def main():
 
     iterations_x = list(range(len(metrics['loss'])))
 
-    # 1. Total Loss Curve
+    # 1. TB Loss Curve
     ax1 = axes[0, 0]
     ax1.plot(iterations_x, metrics['loss'], 'b-', linewidth=1, alpha=0.7)
     ax1.set_xlabel('Iteration')
-    ax1.set_ylabel('Loss')
-    ax1.set_title('Loss Curve (Should Decrease)')
+    ax1.set_ylabel('TB Loss')
+    ax1.set_title('TB Loss Curve (Should Decrease)')
     ax1.grid(True, alpha=0.3)
     ax1.set_yscale('log')
 
-    # 2. Terminal Loss (TB Loss for terminal states)
+    # 2. logZ Curve
     ax2 = axes[0, 1]
-    ax2.plot(iterations_x, metrics['term_loss'], 'r-', linewidth=1, alpha=0.7, label='Terminal Loss')
-    ax2.plot(iterations_x, metrics['flow_loss'], 'g-', linewidth=1, alpha=0.7, label='Flow Loss')
+    ax2.plot(iterations_x, metrics['logZ'], 'r-', linewidth=1, alpha=0.7, label='logZ')
     ax2.set_xlabel('Iteration')
-    ax2.set_ylabel('Loss')
-    ax2.set_title('Trajectory Balance Loss Components')
+    ax2.set_ylabel('logZ')
+    ax2.set_title('logZ (Partition Function)')
     ax2.legend()
     ax2.grid(True, alpha=0.3)
-    ax2.set_yscale('log')
 
-    # 3. Reward Curve
+    # 3. log P_F and log R Curves
     ax3 = axes[1, 0]
-    ax3.plot(iterations_x, metrics['mean_reward'], 'purple', linewidth=1, alpha=0.7)
+    ax3.plot(iterations_x, metrics['log_pf'], 'g-', linewidth=1, alpha=0.7, label='log P_F')
+    ax3.plot(iterations_x, metrics['log_reward'], 'purple', linewidth=1, alpha=0.7, label='log R')
     ax3.set_xlabel('Iteration')
-    ax3.set_ylabel('Mean Reward')
-    ax3.set_title('Reward Curve (Should Increase)')
+    ax3.set_ylabel('Log Value')
+    ax3.set_title('log P_F and log R')
+    ax3.legend()
     ax3.grid(True, alpha=0.3)
 
-    # 4. Smoothed versions (moving average)
+    # 4. Smoothed Loss and logZ
     ax4 = axes[1, 1]
     window = min(100, len(metrics['loss']) // 10) if len(metrics['loss']) > 10 else 1
     if window > 1:
         loss_smooth = np.convolve(metrics['loss'], np.ones(window)/window, mode='valid')
-        reward_smooth = np.convolve(metrics['mean_reward'], np.ones(window)/window, mode='valid')
+        logz_smooth = np.convolve(metrics['logZ'], np.ones(window)/window, mode='valid')
         smooth_x = list(range(len(loss_smooth)))
         ax4.plot(smooth_x, loss_smooth, 'b-', linewidth=2, label='Loss (smoothed)')
         ax4_twin = ax4.twinx()
-        ax4_twin.plot(smooth_x, reward_smooth, 'r-', linewidth=2, label='Reward (smoothed)')
+        ax4_twin.plot(smooth_x, logz_smooth, 'r-', linewidth=2, label='logZ (smoothed)')
         ax4.set_xlabel('Iteration')
         ax4.set_ylabel('Loss', color='blue')
-        ax4_twin.set_ylabel('Reward', color='red')
+        ax4_twin.set_ylabel('logZ', color='red')
         ax4.set_title(f'Smoothed Curves (window={window})')
         ax4.grid(True, alpha=0.3)
     else:
