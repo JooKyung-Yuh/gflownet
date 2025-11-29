@@ -36,6 +36,14 @@ from .policy_network_gnn import LGNGNNPolicy
 from .lgn_mdp import LGNMDP
 from .action_space import LGNActionSpace
 
+# Optional wandb import
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    wandb = None  # type: ignore
+    WANDB_AVAILABLE = False
+
 
 class TrainStepMetrics(TypedDict):
     """Type definition for train_step return metrics."""
@@ -66,6 +74,8 @@ class TrainStepMetrics(TypedDict):
     worst_traj_reward: float
     worst_traj_gates: int
     worst_traj_connected_inputs: int
+    # Reward details (optional)
+    reward_details: Dict[str, float] | None
 
 
 @dataclass
@@ -132,11 +142,13 @@ class LGNTrainer:
         device: torch.device,
         init_logZ: float = 0.0,
         clip_grad: float = 10.0,
+        reward_fn_details: Callable[[LGNState], Dict] | None = None,
     ):
         self.policy = policy
         self.mdp = mdp
         self.action_space = action_space
         self.reward_fn = reward_fn
+        self.reward_fn_details = reward_fn_details  # Optional: returns detailed reward breakdown
         self.optimizer = optimizer
         self.device = device
         self.clip_grad = clip_grad
@@ -417,6 +429,24 @@ class LGNTrainer:
         best_stats = best_traj.terminal_state.get_gate_usage_stats()
         worst_stats = worst_traj.terminal_state.get_gate_usage_stats()
 
+        # Collect reward details if reward_fn_details is provided
+        reward_details = None
+        if self.reward_fn_details is not None:
+            details_list = [self.reward_fn_details(traj.terminal_state) for traj in trajectories]
+            reward_details = {
+                'mean_real_error_count': float(np.mean([d['real_error_count'] for d in details_list])),
+                'mean_fake_acceptance_count': float(np.mean([d['fake_acceptance_count'] for d in details_list])),
+                'mean_real_term': float(np.mean([d['real_term'] for d in details_list])),
+                'mean_fake_term': float(np.mean([d['fake_term'] for d in details_list])),
+                'mean_complexity_term': float(np.mean([d['complexity'] for d in details_list])),
+                # Best trajectory details
+                'best_real_error_count': details_list[best_idx]['real_error_count'],
+                'best_fake_acceptance_count': details_list[best_idx]['fake_acceptance_count'],
+                # Worst trajectory details
+                'worst_real_error_count': details_list[worst_idx]['real_error_count'],
+                'worst_fake_acceptance_count': details_list[worst_idx]['fake_acceptance_count'],
+            }
+
         metrics: TrainStepMetrics = {
             'loss': total_loss.item(),
             'log_loss': float(np.log(total_loss.item() + 1e-8)),
@@ -446,6 +476,8 @@ class LGNTrainer:
             'worst_traj_reward': log_rewards[worst_idx],
             'worst_traj_gates': worst_stats['total_gates'],
             'worst_traj_connected_inputs': worst_stats['connected_inputs'],
+            # Reward details (if available)
+            'reward_details': reward_details,
         }
 
         # Update statistics
@@ -489,13 +521,10 @@ class LGNTrainer:
         Dict[str, List[float]]
             Dictionary of training metrics history
         """
-        # Import wandb if needed
-        if wandb_log:
-            try:
-                import wandb
-            except ImportError:
-                print("Warning: wandb not installed, disabling real-time logging")
-                wandb_log = False
+        # Check wandb availability
+        if wandb_log and not WANDB_AVAILABLE:
+            print("Warning: wandb not installed, disabling real-time logging")
+            wandb_log = False
 
         all_metrics = {
             'loss': [],
@@ -540,7 +569,7 @@ class LGNTrainer:
 
             # Real-time wandb logging
             if wandb_log:
-                wandb.log({
+                wandb_metrics = {
                     "train/log_loss": metrics['log_loss'],
                     "train/logZ": metrics['logZ'],
                     "train/log_pf": metrics['log_pf'],
@@ -559,12 +588,28 @@ class LGNTrainer:
                     "debug/reward_std": metrics['reward_std'],
                     "debug/connected_inputs_min": metrics['connected_inputs_min'],
                     "debug/connected_inputs_max": metrics['connected_inputs_max'],
-                }, step=i)
+                }
+                # Add reward details if available
+                if metrics['reward_details'] is not None:
+                    rd = metrics['reward_details']
+                    wandb_metrics.update({
+                        "reward/mean_real_error_count": rd['mean_real_error_count'],
+                        "reward/mean_fake_acceptance_count": rd['mean_fake_acceptance_count'],
+                        "reward/mean_real_term": rd['mean_real_term'],
+                        "reward/mean_fake_term": rd['mean_fake_term'],
+                        "reward/mean_complexity_term": rd['mean_complexity_term'],
+                        "reward/best_real_error_count": rd['best_real_error_count'],
+                        "reward/best_fake_acceptance_count": rd['best_fake_acceptance_count'],
+                        "reward/worst_real_error_count": rd['worst_real_error_count'],
+                        "reward/worst_fake_acceptance_count": rd['worst_fake_acceptance_count'],
+                    })
+                if wandb is not None:
+                    wandb.log(wandb_metrics, step=i)
 
             # Periodic evaluation (FN/FP tracking)
             if eval_fn is not None and (i % eval_every == 0 or i == num_iterations - 1):
                 eval_metrics = eval_fn()
-                if wandb_log and eval_metrics:
+                if wandb_log and eval_metrics and wandb is not None:
                     wandb.log({f"eval/{k}": v for k, v in eval_metrics.items()}, step=i)
 
             # Print progress
