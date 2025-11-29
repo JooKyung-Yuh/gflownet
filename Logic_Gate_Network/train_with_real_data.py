@@ -26,6 +26,7 @@ from reward.reward_fn import RewardFunction
 from data.generator import RealDataGenerator, FakeDataGenerator, save_to_csv, save_to_json
 from data.dataset import LGNDataset
 from rules.rule_1 import Rule1_NoConsecutive1s
+from visualize_lgn import visualize_lgn
 
 # Optional wandb import
 try:
@@ -123,6 +124,12 @@ def main():
     parser.add_argument('--eval-samples', type=int, default=5, help='Number of LGNs to sample for evaluation')
     parser.add_argument('--max-and-arity', type=int, default=2,
                         help='Max inputs for AND gates (0=no limit, 2=fast, 4=balanced). Default: 2')
+    parser.add_argument('--visualize-every', type=int, default=100,
+                        help='Visualize best LGN circuit every N iterations (0 to disable). Default: 100')
+    parser.add_argument('--clip-grad', type=float, default=10.0,
+                        help='Gradient clipping value (0 to disable). Default: 10.0')
+    parser.add_argument('--temperature', type=float, default=1.0,
+                        help='Temperature for Boltzmann sampling (higher=more exploration). Default: 1.0')
 
     args = parser.parse_args()
 
@@ -163,6 +170,9 @@ def main():
     print(f"  test_ratio: {args.test_ratio}")
     print(f"  device: {device}")
     print(f"  max_and_arity: {args.max_and_arity} {'(no limit)' if args.max_and_arity == 0 else ''}")
+    print(f"  visualize_every: {args.visualize_every} {'(disabled)' if args.visualize_every == 0 else ''}")
+    print(f"  clip_grad: {args.clip_grad} {'(disabled)' if args.clip_grad == 0 else ''}")
+    print(f"  temperature: {args.temperature}")
 
     # Generate timestamp for this run
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -297,6 +307,8 @@ def main():
         optimizer=None,  # Will be set below
         device=device,
         init_logZ=0.0,  # Start with Z=1
+        clip_grad=args.clip_grad,
+        temperature=args.temperature,
     )
 
     # Create optimizer with separate learning rates for policy and logZ
@@ -391,6 +403,11 @@ def main():
     print(f"  Running {args.iterations} iterations with batch_size={args.batch_size}")
     print()
 
+    # Create visualization wrapper function
+    def visualize_fn(lgn, title):
+        """Wrapper for visualize_lgn to match trainer's expected signature."""
+        return visualize_lgn(lgn, save_path=None, title=title, return_fig_only=True)
+
     metrics = trainer.train(
         num_iterations=args.iterations,
         batch_size=args.batch_size,
@@ -398,7 +415,9 @@ def main():
         verbose=True,
         wandb_log=use_wandb,  # Real-time wandb logging
         eval_fn=eval_fn,  # FN/FP trend tracking
-        eval_every=args.eval_every
+        eval_every=args.eval_every,
+        visualize_every=args.visualize_every,
+        visualize_fn=visualize_fn,  # Circuit-style LGN visualization
     )
 
     print("\n" + "=" * 80)

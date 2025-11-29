@@ -76,6 +76,8 @@ class TrainStepMetrics(TypedDict):
     worst_traj_connected_inputs: int
     # Reward details (optional)
     reward_details: Dict[str, float] | None
+    # Best trajectory LGN for visualization
+    best_traj_lgn: LGNState
 
 
 @dataclass
@@ -143,6 +145,7 @@ class LGNTrainer:
         init_logZ: float = 0.0,
         clip_grad: float = 10.0,
         reward_fn_details: Callable[[LGNState], Dict] | None = None,
+        temperature: float = 1.0,
     ):
         self.policy = policy
         self.mdp = mdp
@@ -152,6 +155,7 @@ class LGNTrainer:
         self.optimizer = optimizer
         self.device = device
         self.clip_grad = clip_grad
+        self.temperature = temperature  # Temperature for Boltzmann sampling (higher = more exploration)
 
         # Move policy to device
         self.policy.to(device)
@@ -216,8 +220,9 @@ class LGNTrainer:
                     all_q_values = stop_q.unsqueeze(0)
                     all_actions = [{'action': 'stop'}]
 
-                # Sample action using Boltzmann distribution
-                probs = torch.softmax(all_q_values, dim=0)
+                # Sample action using Boltzmann distribution with temperature
+                # Higher temperature = more exploration, lower = more exploitation
+                probs = torch.softmax(all_q_values / self.temperature, dim=0)
                 cumsum = torch.cumsum(probs, dim=0)
                 u = torch.rand(1, device=probs.device)
                 action_idx = int(torch.searchsorted(cumsum, u).item())
@@ -478,6 +483,8 @@ class LGNTrainer:
             'worst_traj_connected_inputs': worst_stats['connected_inputs'],
             # Reward details (if available)
             'reward_details': reward_details,
+            # Best trajectory LGN for visualization
+            'best_traj_lgn': best_traj.terminal_state,
         }
 
         # Update statistics
@@ -495,6 +502,8 @@ class LGNTrainer:
         wandb_log: bool = False,
         eval_fn: Callable[[], Dict[str, float]] = None,
         eval_every: int = 100,
+        visualize_every: int = 0,
+        visualize_fn: Callable[[LGNState, str], None] | None = None,
     ) -> Dict[str, List[float]]:
         """
         Run full training loop with TB Loss.
@@ -515,6 +524,10 @@ class LGNTrainer:
             Optional evaluation function that returns metrics dict (e.g., FN/FP rates)
         eval_every : int
             Run evaluation every N iterations (default: 100)
+        visualize_every : int
+            Visualize best LGN every N iterations (0 to disable, default: 0)
+        visualize_fn : Callable[[LGNState, str], None]
+            Function to visualize LGN: (lgn, title) -> None. Should return matplotlib figure.
 
         Returns:
         --------
@@ -611,6 +624,16 @@ class LGNTrainer:
                 eval_metrics = eval_fn()
                 if wandb_log and eval_metrics and wandb is not None:
                     wandb.log({f"eval/{k}": v for k, v in eval_metrics.items()}, step=i)
+
+            # Periodic LGN visualization
+            if visualize_every > 0 and visualize_fn is not None and (i % visualize_every == 0 or i == num_iterations - 1):
+                best_lgn = metrics['best_traj_lgn']
+                title = f"Step {i+1}: {best_lgn.get_num_gates()} gates, reward={metrics['best_traj_reward']:.2f}"
+                fig = visualize_fn(best_lgn, title)
+                if wandb_log and wandb is not None and fig is not None:
+                    wandb.log({"lgn/best_circuit": wandb.Image(fig)}, step=i)
+                    import matplotlib.pyplot as plt
+                    plt.close(fig)
 
             # Print progress
             if verbose and (i % log_every == 0 or i == num_iterations - 1):
