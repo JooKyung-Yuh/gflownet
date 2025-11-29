@@ -183,8 +183,9 @@ class RewardFunction:
       raise ValueError("real_data cannot be empty")
 
     # Evaluate LGN on all Real data samples using batch evaluation
+    # Uses evaluate_final_batch which ANDs all root gates' outputs
     evaluator = LGNEvaluator()
-    outputs = evaluator.evaluate_batch(lgn_state, real_data)
+    outputs = evaluator.evaluate_final_batch(lgn_state, real_data)
     # outputs: list of LGN predictions [1, 0, 1, 1, 0, ...] for each sample
 
     # Count misclassifications (Real samples should output 1, not 0)
@@ -244,8 +245,9 @@ class RewardFunction:
       raise ValueError("fake_data cannot be empty")
 
     # Evaluate LGN on all Fake data samples using batch evaluation
+    # Uses evaluate_final_batch which ANDs all root gates' outputs
     evaluator = LGNEvaluator()
-    outputs = evaluator.evaluate_batch(lgn_state, fake_data)
+    outputs = evaluator.evaluate_final_batch(lgn_state, fake_data)
     # outputs: list of LGN predictions [1, 0, 1, 1, 0, ...] for each sample
 
     # Count incorrect acceptances (Fake samples should output 0, not 1)
