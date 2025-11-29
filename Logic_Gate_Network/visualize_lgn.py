@@ -2,7 +2,7 @@
 LGN Visualization Tool
 ======================
 
-Visualize Logic Gate Networks sampled from trained GFlowNet models.
+Visualize Logic Gate Networks as circuit diagrams.
 
 Usage:
     python visualize_lgn.py --model experiments/trained_model.pt
@@ -12,16 +12,11 @@ import torch
 import argparse
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib.patches import FancyBboxPatch, Circle
 from pathlib import Path
 
-try:
-    import networkx as nx
-except ImportError:
-    print("Error: networkx not installed. Install with: pip install networkx")
-    exit(1)
-
 from lgn.network import LGNState
-from lgn.gates import GateType
+from lgn.gates import GateType, apply_gate
 from gflownet.policy_network_gnn import LGNGNNPolicy
 from gflownet.action_space import LGNActionSpace
 from reward.reward_fn import RewardFunction
@@ -56,80 +51,13 @@ def sample_lgn_greedy(policy, action_space, num_inputs, max_gates):
     return lgn
 
 
-def visualize_lgn(lgn, save_path=None, title="Logic Gate Network", sample_data=None):
+def draw_gate_symbol(ax, x, y, gate_type, size=0.3):
     """
-    Visualize an LGN as a tree-like directed graph.
-
-    Args:
-        lgn: LGNState to visualize
-        save_path: Optional path to save figure
-        title: Figure title
-        sample_data: Optional numpy array of input values to show execution
+    Draw a logic gate symbol at position (x, y).
+    Returns (width, height) of the gate.
     """
-    G = nx.DiGraph()
-
-    num_inputs = lgn.num_inputs
-    num_gates = lgn.get_num_gates()
-
-    # Compute node values if sample data provided
-    node_values = {}
-    if sample_data is not None:
-        from lgn.gates import apply_gate
-
-        # Store input values
-        for i in range(num_inputs):
-            node_values[f"in{i}"] = int(sample_data[i])
-
-        # Compute gate outputs step by step
-        for gate_idx, gate in enumerate(lgn.gates):
-            # Get input values for this gate
-            inputs = []
-            for inp_idx in gate.inputs:
-                if inp_idx < num_inputs:
-                    inputs.append(int(sample_data[inp_idx]))
-                else:
-                    source_gate_idx = inp_idx - num_inputs
-                    inputs.append(node_values[f"g{source_gate_idx}"])
-
-            # Compute gate output using apply_gate function
-            gate_output = apply_gate(gate.gate_type, inputs)
-            node_values[f"g{gate_idx}"] = int(gate_output)
-
-    # Add input nodes
-    for i in range(num_inputs):
-        G.add_node(f"in{i}", node_type='input', layer=0)
-
-    # Add gate nodes and compute layers
-    gate_layers = []
-    for gate_idx, gate in enumerate(lgn.gates):
-        gate_id = num_inputs + gate_idx
-
-        # Compute layer based on dependencies
-        max_input_layer = 0
-        for input_idx in gate.inputs:
-            if input_idx >= num_inputs:
-                source_gate_idx = input_idx - num_inputs
-                if source_gate_idx < len(gate_layers):
-                    max_input_layer = max(max_input_layer, gate_layers[source_gate_idx])
-
-        gate_layer = max_input_layer + 1
-        gate_layers.append(gate_layer)
-
-        G.add_node(f"g{gate_idx}", node_type='gate', gate_type=gate.gate_type.name,
-                   layer=gate_layer, actual_id=gate_id)
-
-        # Add edges from inputs to gate
-        for input_idx in gate.inputs:
-            if input_idx < num_inputs:
-                G.add_edge(f"in{input_idx}", f"g{gate_idx}")
-            else:
-                # Input from another gate
-                source_gate_idx = input_idx - num_inputs
-                G.add_edge(f"g{source_gate_idx}", f"g{gate_idx}")
-
-    # Define node colors
-    color_map = {
-        'input': '#87CEEB',  # Sky blue
+    # Colors for different gate types
+    gate_colors = {
         'AND': '#90EE90',    # Light green
         'OR': '#FFB6C1',     # Light pink
         'XOR': '#FFD700',    # Gold
@@ -139,85 +67,297 @@ def visualize_lgn(lgn, save_path=None, title="Logic Gate Network", sample_data=N
         'NOT': '#DDA0DD',    # Plum
         'IMPLY': '#87CEFA',  # Light sky blue
         'NIMPLY': '#B0C4DE', # Light steel blue
-        'CONVERSE_NIMPLY': '#ADD8E6',  # Light blue
-        'default': '#D3D3D3' # Light gray
     }
 
-    node_colors = []
-    node_labels = {}
+    color = gate_colors.get(gate_type, '#D3D3D3')
 
-    for node in G.nodes():
-        node_data = G.nodes[node]
-        if node_data['node_type'] == 'input':
-            node_colors.append(color_map['input'])
-            label = node.replace('in', 'x')
-            if node in node_values:
-                label += f"={node_values[node]}"
-            node_labels[node] = label
+    # Rectangular gate with label
+    w, h = size * 1.2, size * 0.8
+    rect = FancyBboxPatch((x - w/2, y - h/2), w, h,
+                          boxstyle="round,pad=0.02,rounding_size=0.1",
+                          facecolor=color, edgecolor='black', linewidth=2)
+    ax.add_patch(rect)
+
+    # Add NOT bubble for NAND, NOR, XNOR, NOT
+    if gate_type in ['NAND', 'NOR', 'XNOR', 'NOT', 'NIMPLY']:
+        bubble = Circle((x + w/2 + 0.03, y), 0.03, facecolor='white', edgecolor='black', linewidth=1.5)
+        ax.add_patch(bubble)
+
+    # Gate label
+    short_name = gate_type.replace('CONVERSE_', 'C_')
+    ax.text(x, y, short_name, ha='center', va='center', fontsize=8, fontweight='bold')
+
+    return w, h
+
+
+def visualize_lgn(lgn, save_path=None, title="Logic Gate Network", sample_data=None):
+    """
+    Visualize an LGN as a circuit diagram with orthogonal wiring.
+
+    Layout: Left-to-right signal flow
+    - Inputs on the left
+    - Gates arranged in layers (by dependency depth)
+    - Output on the right
+    - Orthogonal (right-angle) wiring
+
+    Args:
+        lgn: LGNState to visualize
+        save_path: Optional path to save figure
+        title: Figure title
+        sample_data: Optional list of input values to show execution
+    """
+    num_inputs = lgn.num_inputs
+    num_gates = lgn.get_num_gates()
+
+    # Compute node values if sample data provided
+    node_values = {}
+    if sample_data is not None:
+        for i in range(num_inputs):
+            node_values[i] = int(sample_data[i])
+        for gate_idx, gate in enumerate(lgn.gates):
+            inputs = []
+            for inp_idx in gate.inputs:
+                if inp_idx < num_inputs:
+                    inputs.append(int(sample_data[inp_idx]))
+                else:
+                    inputs.append(node_values[inp_idx])
+            gate_output = apply_gate(gate.gate_type, inputs)
+            node_values[num_inputs + gate_idx] = int(gate_output)
+
+    # Compute gate layers (depth from inputs)
+    gate_layers = []
+    for gate_idx, gate in enumerate(lgn.gates):
+        max_input_layer = 0
+        for input_idx in gate.inputs:
+            if input_idx >= num_inputs:
+                source_gate_idx = input_idx - num_inputs
+                if source_gate_idx < len(gate_layers):
+                    max_input_layer = max(max_input_layer, gate_layers[source_gate_idx])
+        gate_layers.append(max_input_layer + 1)
+
+    max_layer = max(gate_layers) if gate_layers else 0
+
+    # Find root gates (outputs not used by other gates)
+    root_gates = lgn.get_root_gates() if hasattr(lgn, 'get_root_gates') else []
+
+    # Find which inputs are actually used by gates
+    used_inputs = set()
+    for gate in lgn.gates:
+        for inp_idx in gate.inputs:
+            if inp_idx < num_inputs:
+                used_inputs.add(inp_idx)
+
+    # Create figure
+    fig_width = max(10, 3 + max_layer * 2.5)
+    fig_height = max(6, num_inputs * 0.8)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
+    # Layout parameters
+    input_x = 0.5
+    gate_start_x = 2.0
+    layer_spacing = 2.0
+    gate_size = 0.4
+
+    # Position storage: node_id -> (x, y, output_x)
+    node_positions = {}
+
+    # Draw input nodes (left side, vertically distributed)
+    input_y_start = fig_height - 1.0
+    input_spacing = (fig_height - 2.0) / max(num_inputs - 1, 1) if num_inputs > 1 else 0
+
+    for i in range(num_inputs):
+        y = input_y_start - i * input_spacing
+        is_used = i in used_inputs
+
+        # Input circle (gray if unused)
+        color = '#87CEEB' if is_used else '#D3D3D3'
+        circle = Circle((input_x, y), 0.15, facecolor=color, edgecolor='black', linewidth=2)
+        ax.add_patch(circle)
+
+        # Label
+        label = f"x{i}"
+        if i in node_values:
+            label += f"={node_values[i]}"
+        text_color = 'black' if is_used else 'gray'
+        ax.text(input_x - 0.35, y, label, ha='right', va='center', fontsize=10, fontweight='bold', color=text_color)
+
+        # Add "unused" label for unused inputs
+        if not is_used:
+            ax.text(input_x + 0.5, y, "(unused)", ha='left', va='center', fontsize=8, color='gray', style='italic')
+
+        # Horizontal wire from input (only if used)
+        wire_end_x = input_x + 0.15
+        if is_used:
+            ax.plot([input_x + 0.15, wire_end_x + 0.3], [y, y], 'k-', linewidth=1.5)
         else:
-            gate_type = node_data['gate_type']
-            node_colors.append(color_map.get(gate_type, color_map['default']))
-            # Shorten gate type names for readability
-            short_name = gate_type.replace('CONVERSE_', 'C_').replace('NIMPLY', 'NIM')
-            if node in node_values:
-                short_name += f"\n={node_values[node]}"
-            node_labels[node] = short_name
+            ax.plot([input_x + 0.15, wire_end_x + 0.2], [y, y], color='gray', linewidth=1, linestyle='--')
 
-    # Hierarchical tree layout
-    pos = {}
+        node_positions[i] = (input_x, y, wire_end_x + 0.3)
 
-    # Group nodes by layer
-    layers = {}
-    for node in G.nodes():
-        layer = G.nodes[node]['layer']
-        if layer not in layers:
-            layers[layer] = []
-        layers[layer].append(node)
+    # Group gates by layer
+    layers_dict = {}
+    for gate_idx, layer in enumerate(gate_layers):
+        if layer not in layers_dict:
+            layers_dict[layer] = []
+        layers_dict[layer].append(gate_idx)
 
-    # Position nodes in tree layout
-    max_layer = max(layers.keys())
-    layer_height = 1.0 / (max_layer + 1)
+    # Draw gates layer by layer (left to right)
+    for layer_idx in sorted(layers_dict.keys()):
+        gates_in_layer = layers_dict[layer_idx]
+        layer_x = gate_start_x + (layer_idx - 1) * layer_spacing
 
-    for layer_idx, nodes in layers.items():
-        y = 1.0 - layer_idx * layer_height  # Top to bottom
-        num_nodes = len(nodes)
+        # Position gates based on their input connections (average y of inputs)
+        gate_y_positions = []
+        for gate_idx in gates_in_layer:
+            gate = lgn.gates[gate_idx]
+            # Calculate average y position of inputs
+            input_ys = []
+            for inp_idx in gate.inputs:
+                if inp_idx in node_positions:
+                    _, inp_y, _ = node_positions[inp_idx]
+                    input_ys.append(inp_y)
+            if input_ys:
+                avg_y = sum(input_ys) / len(input_ys)
+            else:
+                avg_y = fig_height / 2
+            gate_y_positions.append((gate_idx, avg_y))
 
-        # Sort nodes for consistent layout
-        nodes_sorted = sorted(nodes)
+        # Sort by y position to avoid crossings, then spread if overlapping
+        gate_y_positions.sort(key=lambda x: -x[1])  # Sort by y (top to bottom)
 
-        for i, node in enumerate(nodes_sorted):
-            x = (i + 1) / (num_nodes + 1)  # Evenly spaced
-            pos[node] = (x, y)
+        # Spread gates if they're too close
+        min_spacing = gate_size * 1.5
+        for i in range(1, len(gate_y_positions)):
+            prev_y = gate_y_positions[i-1][1]
+            curr_y = gate_y_positions[i][1]
+            if prev_y - curr_y < min_spacing:
+                gate_y_positions[i] = (gate_y_positions[i][0], prev_y - min_spacing)
 
-    # Draw
-    plt.figure(figsize=(12, 8))
+        for gate_idx, y in gate_y_positions:
+            gate = lgn.gates[gate_idx]
+            gate_id = num_inputs + gate_idx
 
-    nx.draw_networkx_nodes(G, pos, node_color=node_colors,
-                           node_size=1500, alpha=0.9)
-    nx.draw_networkx_labels(G, pos, node_labels, font_size=10,
-                            font_weight='bold')
-    nx.draw_networkx_edges(G, pos, edge_color='gray', arrows=True,
-                           arrowsize=20, arrowstyle='->', width=2)
+            # Draw gate symbol
+            w, h = draw_gate_symbol(ax, layer_x, y, gate.gate_type.name, size=gate_size)
+
+            # Gate output value
+            if gate_id in node_values:
+                ax.text(layer_x + w/2 + 0.15, y + 0.15, f"={node_values[gate_id]}",
+                       fontsize=8, color='blue')
+
+            # Mark root gates
+            if gate_idx in root_gates:
+                ax.text(layer_x, y - h/2 - 0.15, "ROOT", ha='center', fontsize=7,
+                       color='red', fontweight='bold')
+
+            # Store position (input side, center y, output side)
+            node_positions[gate_id] = (layer_x - w/2, y, layer_x + w/2 + 0.06)
+
+            # Draw input wires with orthogonal routing
+            num_gate_inputs = len(gate.inputs)
+            input_y_offsets = []
+            if num_gate_inputs == 1:
+                input_y_offsets = [0]
+            elif num_gate_inputs == 2:
+                input_y_offsets = [h/4, -h/4]
+            else:
+                for j in range(num_gate_inputs):
+                    offset = (j - (num_gate_inputs - 1) / 2) * (h / (num_gate_inputs + 1))
+                    input_y_offsets.append(offset)
+
+            for j, inp_idx in enumerate(gate.inputs):
+                src_x, src_y, src_out_x = node_positions[inp_idx]
+                dst_x = layer_x - w/2
+                dst_y = y + input_y_offsets[j]
+
+                # Wire styling
+                wire_color = '#333333'
+                wire_width = 1.5
+
+                if abs(src_y - dst_y) < 0.05:
+                    # Nearly horizontal - draw direct line
+                    ax.plot([src_out_x, dst_x], [src_y, dst_y], color=wire_color, linewidth=wire_width)
+                else:
+                    # Orthogonal routing: horizontal, then vertical, then horizontal
+                    mid_x = (src_out_x + dst_x) / 2
+                    ax.plot([src_out_x, mid_x], [src_y, src_y], color=wire_color, linewidth=wire_width)
+                    ax.plot([mid_x, mid_x], [src_y, dst_y], color=wire_color, linewidth=wire_width)
+                    ax.plot([mid_x, dst_x], [dst_y, dst_y], color=wire_color, linewidth=wire_width)
+
+                # Connection dot at gate input
+                ax.plot(dst_x, dst_y, 'ko', markersize=3)
+
+    # Draw output wires from root gates
+    if root_gates:
+        output_x = gate_start_x + max_layer * layer_spacing + 0.5
+
+        # If multiple root gates, show AND combination
+        if len(root_gates) > 1:
+            # Draw AND gate for combining root outputs
+            and_x = output_x
+            and_y = fig_height / 2
+            w, h = draw_gate_symbol(ax, and_x, and_y, 'AND', size=gate_size)
+
+            # Connect root gates to AND gate
+            for i, root_idx in enumerate(root_gates):
+                gate_id = num_inputs + root_idx
+                src_x, src_y, src_out_x = node_positions[gate_id]
+                dst_x = and_x - w/2
+                dst_y = and_y + (i - (len(root_gates) - 1) / 2) * (h / (len(root_gates) + 1))
+
+                mid_x = (src_out_x + dst_x) / 2
+                ax.plot([src_out_x, mid_x], [src_y, src_y], 'k-', linewidth=1.5)
+                ax.plot([mid_x, mid_x], [src_y, dst_y], 'k-', linewidth=1.5)
+                ax.plot([mid_x, dst_x], [dst_y, dst_y], 'k-', linewidth=1.5)
+
+            # Output wire
+            ax.plot([and_x + w/2 + 0.06, and_x + w/2 + 0.5], [and_y, and_y], 'k-', linewidth=2)
+            ax.text(and_x + w/2 + 0.6, and_y, "OUT", ha='left', va='center',
+                   fontsize=10, fontweight='bold')
+
+            # Show combined output value
+            if sample_data is not None:
+                root_outputs = [node_values[num_inputs + r] for r in root_gates]
+                final_output = int(all(root_outputs))
+                ax.text(and_x + w/2 + 0.6, and_y - 0.25, f"={final_output}",
+                       fontsize=10, color='blue', fontweight='bold')
+        else:
+            # Single root gate
+            root_idx = root_gates[0]
+            gate_id = num_inputs + root_idx
+            src_x, src_y, src_out_x = node_positions[gate_id]
+            ax.plot([src_out_x, src_out_x + 0.5], [src_y, src_y], 'k-', linewidth=2)
+            ax.text(src_out_x + 0.6, src_y, "OUT", ha='left', va='center',
+                   fontsize=10, fontweight='bold')
+
+            if gate_id in node_values:
+                ax.text(src_out_x + 0.6, src_y - 0.25, f"={node_values[gate_id]}",
+                       fontsize=10, color='blue', fontweight='bold')
 
     # Legend
     legend_elements = [
-        mpatches.Patch(color=color_map['input'], label='Input'),
-        mpatches.Patch(color=color_map['AND'], label='AND'),
-        mpatches.Patch(color=color_map['OR'], label='OR'),
-        mpatches.Patch(color=color_map['XOR'], label='XOR'),
-        mpatches.Patch(color=color_map['NOT'], label='NOT'),
-        mpatches.Patch(color=color_map['NAND'], label='NAND'),
-        mpatches.Patch(color=color_map['NOR'], label='NOR'),
+        mpatches.Patch(color='#87CEEB', label='Input'),
+        mpatches.Patch(color='#90EE90', label='AND'),
+        mpatches.Patch(color='#FFB6C1', label='OR'),
+        mpatches.Patch(color='#FFD700', label='XOR'),
+        mpatches.Patch(color='#DDA0DD', label='NOT'),
+        mpatches.Patch(color='#98FB98', label='NAND'),
+        mpatches.Patch(color='#FFA07A', label='NOR'),
     ]
-    plt.legend(handles=legend_elements, loc='upper left', fontsize=10)
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=9)
 
-    plt.title(title, fontsize=14, fontweight='bold')
-    plt.axis('off')
+    # Title and formatting
+    ax.set_title(title, fontsize=12, fontweight='bold', pad=10)
+    ax.set_xlim(-0.5, fig_width - 0.5)
+    ax.set_ylim(-0.5, fig_height + 0.5)
+    ax.set_aspect('equal')
+    ax.axis('off')
+
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"✅ Figure saved to {save_path}")
+        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
+        print(f"✅ Circuit diagram saved to {save_path}")
         plt.close(fig)
     else:
         plt.show()
