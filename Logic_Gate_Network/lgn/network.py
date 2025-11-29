@@ -274,13 +274,14 @@ class LGNState:
         True  # Condition 2 met (3 gates == max_gates)
     """
     # Condition 1: All features connected
-    all_features_connected = (len(self.get_features_used()) == self.num_inputs)
+    # all_features_connected = (len(self.get_features_used()) == self.num_inputs)
     
     # Condition 2: Max gates reached
     max_gates_reached = (len(self.gates) >= self.max_gates)
     
     # Terminate if EITHER is true
-    return all_features_connected or max_gates_reached
+    # return all_features_connected or max_gates_reached
+    return max_gates_reached
     
   
   def to_dict(self) -> dict:

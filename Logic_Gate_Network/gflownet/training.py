@@ -59,7 +59,7 @@ class TrainStepMetrics(TypedDict):
     gate_type_counts: Dict[str, int]
     # Distribution metrics for debugging
     termination_by_max_gates: int
-    termination_by_all_features: int
+    # termination_by_all_features: int
     termination_by_stop_action: int
     connectivity_ratio: float  # mean(connected_inputs / total_inputs)
     reward_min: float
@@ -238,8 +238,8 @@ class LGNTrainer:
                     # Determine termination reason
                     if lgn.get_num_gates() >= lgn.max_gates:
                         termination_reason = 'max_gates'
-                    elif len(lgn.get_features_used()) >= lgn.num_inputs:
-                        termination_reason = 'all_features'
+                    # elif len(lgn.get_features_used()) >= lgn.num_inputs:
+                    #     termination_reason = 'all_features'
                     else:
                         termination_reason = 'stop_action'
 
@@ -412,7 +412,9 @@ class LGNTrainer:
         connected_gates_list = []
         connected_inputs_list = []
         gate_type_totals = Counter()
-        termination_counts = {'max_gates': 0, 'all_features': 0, 'stop_action': 0}
+        termination_counts = {'max_gates': 0, 
+                              # 'all_features': 0,
+                              'stop_action': 0}
 
         for traj in trajectories:
             stats = traj.terminal_state.get_gate_usage_stats()
@@ -466,7 +468,7 @@ class LGNTrainer:
             'gate_type_counts': dict(gate_type_totals),
             # Distribution metrics for debugging
             'termination_by_max_gates': termination_counts['max_gates'],
-            'termination_by_all_features': termination_counts['all_features'],
+            # 'termination_by_all_features': termination_counts['all_features'],
             'termination_by_stop_action': termination_counts['stop_action'],
             'connectivity_ratio': float(np.mean(connectivity_ratios)),
             'reward_min': float(np.min(log_rewards)),
@@ -593,7 +595,7 @@ class LGNTrainer:
                     "train/mean_connected_inputs": metrics['mean_connected_inputs'],
                     # Distribution metrics
                     "debug/termination_max_gates_ratio": metrics['termination_by_max_gates'] / batch_size,
-                    "debug/termination_all_features_ratio": metrics['termination_by_all_features'] / batch_size,
+                    # "debug/termination_all_features_ratio": metrics['termination_by_all_features'] / batch_size,
                     "debug/termination_stop_action_ratio": metrics['termination_by_stop_action'] / batch_size,
                     "debug/connectivity_ratio": metrics['connectivity_ratio'],
                     "debug/reward_min": metrics['reward_min'],
@@ -651,10 +653,10 @@ class LGNTrainer:
 
                 # Termination reason analysis
                 term_max = metrics['termination_by_max_gates']
-                term_feat = metrics['termination_by_all_features']
+                # term_feat = metrics['termination_by_all_features']
                 term_stop = metrics['termination_by_stop_action']
                 print(f"  Termination: max_gates={term_max}/{batch_size} ({100*term_max/batch_size:.0f}%) | "
-                      f"all_features={term_feat}/{batch_size} ({100*term_feat/batch_size:.0f}%) | "
+                      # f"all_features={term_feat}/{batch_size} ({100*term_feat/batch_size:.0f}%) | "
                       f"stop_action={term_stop}/{batch_size} ({100*term_stop/batch_size:.0f}%)")
 
                 # Connectivity analysis
