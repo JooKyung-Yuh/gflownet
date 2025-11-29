@@ -506,6 +506,7 @@ class LGNTrainer:
         eval_every: int = 100,
         visualize_every: int = 0,
         visualize_fn: Callable[[LGNState, str], None] | None = None,
+        acc_log_interval: int = 0,
     ) -> Dict[str, List[float]]:
         """
         Run full training loop with TB Loss.
@@ -530,6 +531,8 @@ class LGNTrainer:
             Visualize best LGN every N iterations (0 to disable, default: 0)
         visualize_fn : Callable[[LGNState, str], None]
             Function to visualize LGN: (lgn, title) -> None. Should return matplotlib figure.
+        acc_log_interval : int
+            Print accuracy every N iterations (0 to disable, default: 0)
 
         Returns:
         --------
@@ -626,6 +629,16 @@ class LGNTrainer:
                 eval_metrics = eval_fn()
                 if wandb_log and eval_metrics and wandb is not None:
                     wandb.log({f"eval/{k}": v for k, v in eval_metrics.items()}, step=i)
+
+            # Periodic accuracy logging
+            if acc_log_interval > 0 and eval_fn is not None and (i % acc_log_interval == 0 or i == num_iterations - 1):
+                # Run eval (always call to ensure fresh metrics)
+                acc_eval_metrics = eval_fn()
+                # Compute accuracy from real_acc and fake_acc
+                real_acc = acc_eval_metrics.get('real_acc', 0)
+                fake_acc = acc_eval_metrics.get('fake_acc', 0)
+                accuracy = (real_acc + fake_acc) / 2.0
+                print(f"\n  📊 Step {i+1} Accuracy: {accuracy*100:.2f}% (Real: {real_acc*100:.2f}%, Fake: {fake_acc*100:.2f}%)")
 
             # Periodic LGN visualization
             if visualize_every > 0 and visualize_fn is not None and (i % visualize_every == 0 or i == num_iterations - 1):

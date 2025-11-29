@@ -75,11 +75,11 @@ class LGNEvaluator:
 
   def evaluate_final(self, lgn_state: LGNState, binary_input: list[int]) -> int:
     """
-    Evaluate LGN using AND combination of all root gates' outputs.
+    Evaluate LGN using majority voting of all root gates' outputs.
 
     Unlike evaluate() which returns only the last gate's output, this method
     finds all root gates (gates whose outputs are not used by other gates)
-    and returns the AND of their outputs.
+    and returns 1 if the average of their outputs >= 0.5, else 0.
 
     This ensures all sub-LGNs contribute to the final output, preventing
     disconnected subgraphs from being ignored in reward calculation.
@@ -89,18 +89,17 @@ class LGNEvaluator:
         binary_input (list[int]): Binary input vector (0s and 1s).
 
     Returns:
-        int: 1 if ALL root gates output 1, 0 otherwise.
+        int: 1 if average of root gate outputs >= 0.5, 0 otherwise.
              Returns 1 if no gates exist (empty network).
 
     Example:
         >>> lgn = LGNState(num_inputs=5, max_gates=10)
         >>> lgn.add_gate(GateType.AND, [0, 1])    # Gate 0, root
         >>> lgn.add_gate(GateType.OR, [2, 3])     # Gate 1, root (disconnected)
+        >>> lgn.add_gate(GateType.XOR, [3, 4])    # Gate 2, root (disconnected)
         >>> evaluator = LGNEvaluator()
-        >>> evaluator.evaluate(lgn, [1, 1, 0, 0, 0])
-        0  # Only Gate 1's output (OR of 0,0 = 0)
-        >>> evaluator.evaluate_final(lgn, [1, 1, 0, 0, 0])
-        0  # AND(Gate0=1, Gate1=0) = 0
+        >>> evaluator.evaluate_final(lgn, [1, 1, 0, 0, 1])
+        1  # mean(Gate0=1, Gate1=0, Gate2=1) = 0.67 >= 0.5
     """
     if len(lgn_state.gates) == 0:
       return 1  # Empty network defaults to 1
@@ -120,7 +119,10 @@ class LGNEvaluator:
       return outputs[-1]  # Fallback to last gate if no roots found
 
     root_outputs = [outputs[lgn_state.num_inputs + gate_idx] for gate_idx in root_gates]
-    return int(all(root_outputs))  # AND combination
+    result = sum(root_outputs) / len(root_outputs)
+    if result>=0.5:
+      return 1
+    return 0
 
   def evaluate_final_batch(self, lgn_state: LGNState, binary_inputs: list[list[int]]) -> list[int]:
     """

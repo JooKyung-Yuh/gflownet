@@ -78,6 +78,8 @@ def draw_gate_symbol(ax, x, y, gate_type, size=0.3):
         'SECOND': '#DEB887',  # Burlywood
         'NFIRST': '#D2B48C',  # Tan
         'NSECOND': '#BC8F8F', # Rosy brown
+        # Virtual gate for combining root outputs
+        'AVG': '#D3D3D3',     # Light gray (majority voting)
     }
 
     color = gate_colors.get(gate_type, '#D3D3D3')
@@ -302,26 +304,26 @@ def visualize_lgn(lgn, save_path=None, title="Logic Gate Network", sample_data=N
     if root_gates:
         output_x = gate_start_x + max_layer * layer_spacing + 0.5
 
-        # If multiple root gates, show AND combination (virtual gate - not part of learned network)
+        # If multiple root gates, show AVG combination (virtual gate - majority voting)
         if len(root_gates) > 1:
-            # Draw AND gate for combining root outputs (gray dashed border to indicate virtual)
-            and_x = output_x
-            and_y = fig_height / 2
-            w, h = draw_gate_symbol(ax, and_x, and_y, 'AND', size=gate_size)
+            # Draw AVG gate for combining root outputs (gray dashed border to indicate virtual)
+            avg_x = output_x
+            avg_y = fig_height / 2
+            w, h = draw_gate_symbol(ax, avg_x, avg_y, 'AVG', size=gate_size)
             # Add gray dashed border overlay to indicate virtual gate
             virtual_rect = FancyBboxPatch(
-                (and_x - w/2, and_y - h/2), w, h,
+                (avg_x - w/2, avg_y - h/2), w, h,
                 boxstyle="round,pad=0.02,rounding_size=0.1",
                 facecolor='none', edgecolor='gray', linewidth=2, linestyle='--'
             )
             ax.add_patch(virtual_rect)
 
-            # Connect root gates to AND gate (gray dashed lines for virtual connections)
+            # Connect root gates to AVG gate (gray dashed lines for virtual connections)
             for i, root_idx in enumerate(root_gates):
                 gate_id = num_inputs + root_idx
                 src_x, src_y, src_out_x = node_positions[gate_id]
-                dst_x = and_x - w/2
-                dst_y = and_y + (i - (len(root_gates) - 1) / 2) * (h / (len(root_gates) + 1))
+                dst_x = avg_x - w/2
+                dst_y = avg_y + (i - (len(root_gates) - 1) / 2) * (h / (len(root_gates) + 1))
 
                 mid_x = (src_out_x + dst_x) / 2
                 ax.plot([src_out_x, mid_x], [src_y, src_y], color='gray', linestyle='--', linewidth=1.5)
@@ -329,15 +331,15 @@ def visualize_lgn(lgn, save_path=None, title="Logic Gate Network", sample_data=N
                 ax.plot([mid_x, dst_x], [dst_y, dst_y], color='gray', linestyle='--', linewidth=1.5)
 
             # Output wire (gray dashed)
-            ax.plot([and_x + w/2 + 0.06, and_x + w/2 + 0.5], [and_y, and_y], color='gray', linestyle='--', linewidth=2)
-            ax.text(and_x + w/2 + 0.6, and_y, "OUT", ha='left', va='center',
+            ax.plot([avg_x + w/2 + 0.06, avg_x + w/2 + 0.5], [avg_y, avg_y], color='gray', linestyle='--', linewidth=2)
+            ax.text(avg_x + w/2 + 0.6, avg_y, "OUT", ha='left', va='center',
                    fontsize=10, fontweight='bold', color='gray')
 
-            # Show combined output value
+            # Show combined output value (majority voting: mean >= 0.5 -> 1)
             if sample_data is not None:
                 root_outputs = [node_values[num_inputs + r] for r in root_gates]
-                final_output = int(all(root_outputs))
-                ax.text(and_x + w/2 + 0.6, and_y - 0.25, f"={final_output}",
+                final_output = 1 if sum(root_outputs) / len(root_outputs) >= 0.5 else 0
+                ax.text(avg_x + w/2 + 0.6, avg_y - 0.25, f"={final_output}",
                        fontsize=10, color='blue', fontweight='bold')
         else:
             # Single root gate
@@ -352,31 +354,17 @@ def visualize_lgn(lgn, save_path=None, title="Logic Gate Network", sample_data=N
                 ax.text(src_out_x + 0.6, src_y - 0.25, f"={node_values[gate_id]}",
                        fontsize=10, color='blue', fontweight='bold')
 
-    # Legend - show only gates that are actually used in this LGN
-    used_gate_types = set(gate.gate_type.name for gate in lgn.gates)
-
-    # Always include Input
-    legend_elements = [mpatches.Patch(color='#87CEEB', label='Input')]
-
-    # Gate colors for legend (same as draw_gate_symbol)
-    legend_gate_colors = {
-        'AND': '#90EE90', 'OR': '#FFB6C1', 'XOR': '#FFD700',
-        'NAND': '#98FB98', 'NOR': '#FFA07A', 'XNOR': '#F0E68C',
-        'NOT': '#DDA0DD', 'BUFFER': '#E6E6FA',
-        'IMPLY': '#87CEFA', 'NIMPLY': '#B0C4DE',
-        'CONVERSE_IMPLY': '#ADD8E6', 'CONVERSE_NIMPLY': '#5F9EA0',
-        'FIRST': '#F5DEB3', 'SECOND': '#DEB887',
-        'NFIRST': '#D2B48C', 'NSECOND': '#BC8F8F',
-    }
-
-    # Add only used gate types to legend
-    for gate_name in ['AND', 'OR', 'XOR', 'NAND', 'NOR', 'XNOR', 'NOT', 'BUFFER',
-                      'IMPLY', 'NIMPLY', 'CONVERSE_IMPLY', 'CONVERSE_NIMPLY',
-                      'FIRST', 'SECOND', 'NFIRST', 'NSECOND']:
-        if gate_name in used_gate_types:
-            legend_elements.append(mpatches.Patch(color=legend_gate_colors[gate_name], label=gate_name))
-
-    ax.legend(handles=legend_elements, loc='upper right', fontsize=8)
+    # Legend
+    legend_elements = [
+        mpatches.Patch(color='#87CEEB', label='Input'),
+        mpatches.Patch(color='#90EE90', label='AND'),
+        mpatches.Patch(color='#FFB6C1', label='OR'),
+        mpatches.Patch(color='#FFD700', label='XOR'),
+        mpatches.Patch(color='#DDA0DD', label='NOT'),
+        mpatches.Patch(color='#98FB98', label='NAND'),
+        mpatches.Patch(color='#FFA07A', label='NOR'),
+    ]
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=9)
 
     # Title and formatting
     ax.set_title(title, fontsize=12, fontweight='bold', pad=10)

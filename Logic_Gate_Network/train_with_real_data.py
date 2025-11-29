@@ -130,6 +130,8 @@ def main():
                         help='Gradient clipping value (0 to disable). Default: 10.0')
     parser.add_argument('--temperature', type=float, default=1.0,
                         help='Temperature for Boltzmann sampling (higher=more exploration). Default: 1.0')
+    parser.add_argument('--log-interval', type=int, default=100,
+                        help='Print accuracy every N steps (0 to disable). Default: 100')
 
     args = parser.parse_args()
 
@@ -173,6 +175,7 @@ def main():
     print(f"  visualize_every: {args.visualize_every} {'(disabled)' if args.visualize_every == 0 else ''}")
     print(f"  clip_grad: {args.clip_grad} {'(disabled)' if args.clip_grad == 0 else ''}")
     print(f"  temperature: {args.temperature}")
+    print(f"  log_interval: {args.log_interval} {'(disabled)' if args.log_interval == 0 else ''}")
 
     # Generate timestamp for this run
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -321,18 +324,16 @@ def main():
     print(f"  ✅ Trainer created (TB Loss with logZ parameter)")
     print(f"     Policy lr: {args.lr}, logZ lr: {args.lr_logz}")
 
-    # Create evaluation function for FN/FP trend tracking
+    # Create evaluation function for accuracy tracking
     def create_eval_fn(policy, mdp, action_space, test_real, test_fake, num_samples):
-        """Create evaluation function closure for periodic FN/FP evaluation."""
+        """Create evaluation function closure for periodic accuracy evaluation."""
         from lgn import LGNEvaluator
         evaluator = LGNEvaluator()
 
         def eval_fn():
-            """Sample LGNs and compute FN/FP rates on test data."""
-            fn_rates = []
-            fp_rates = []
-            real_rejection_rates = []
-            fake_rejection_rates = []
+            """Sample LGNs and compute accuracy on test data."""
+            real_accs = []
+            fake_accs = []
 
             with torch.no_grad():
                 for _ in range(num_samples):
@@ -365,25 +366,17 @@ def main():
                     real_outputs = evaluator.evaluate_batch(lgn, test_real)
                     fake_outputs = evaluator.evaluate_batch(lgn, test_fake)
 
-                    # FN rate: Real samples incorrectly rejected (output 0)
-                    fn_rate = (len(test_real) - real_outputs.count(1)) / len(test_real)
-                    fn_rates.append(fn_rate)
+                    # real_acc: Real samples correctly accepted (output 1)
+                    real_acc = real_outputs.count(1) / len(test_real)
+                    real_accs.append(real_acc)
 
-                    # FP rate: Fake samples incorrectly accepted (output 1)
-                    fp_rate = fake_outputs.count(1) / len(test_fake)
-                    fp_rates.append(fp_rate)
-
-                    # Rejection rates (for trend tracking)
-                    real_rejection_rate = real_outputs.count(0) / len(test_real)
-                    fake_rejection_rate = fake_outputs.count(0) / len(test_fake)
-                    real_rejection_rates.append(real_rejection_rate)
-                    fake_rejection_rates.append(fake_rejection_rate)
+                    # fake_acc: Fake samples correctly rejected (output 0)
+                    fake_acc = fake_outputs.count(0) / len(test_fake)
+                    fake_accs.append(fake_acc)
 
             return {
-                'fn_rate': np.mean(fn_rates),
-                'fp_rate': np.mean(fp_rates),
-                'real_rejection_rate': np.mean(real_rejection_rates),
-                'fake_rejection_rate': np.mean(fake_rejection_rates),
+                'real_acc': np.mean(real_accs),
+                'fake_acc': np.mean(fake_accs),
             }
 
         return eval_fn
@@ -418,6 +411,7 @@ def main():
         eval_every=args.eval_every,
         visualize_every=args.visualize_every,
         visualize_fn=visualize_fn,  # Circuit-style LGN visualization
+        acc_log_interval=args.log_interval,  # Print accuracy every N steps
     )
 
     print("\n" + "=" * 80)
