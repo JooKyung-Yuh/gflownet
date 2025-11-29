@@ -262,7 +262,8 @@ def main():
     print(f"  ✅ MDP and Action Space created (max_and_arity={args.max_and_arity})")
 
     # Create reward function connected to real data
-    reward_fn = RewardFunction()
+    # C=3.0: Weight real errors more heavily to prevent "reject everything" strategy
+    reward_fn = RewardFunction(C=3.0)
 
     def compute_reward(lgn: LGNState) -> float:
         """
@@ -276,6 +277,10 @@ def main():
         import numpy as np
         return np.exp(log_reward)  # Convert log-reward to actual reward
 
+    def compute_reward_details(lgn: LGNState) -> dict:
+        """Compute reward with detailed breakdown for wandb logging."""
+        return reward_fn.compute_reward(lgn, train_real, train_fake, return_details=True)
+
     print(f"  ✅ Reward function created")
 
     # Step 4: Create trainer
@@ -288,6 +293,7 @@ def main():
         mdp=mdp,
         action_space=action_space,
         reward_fn=compute_reward,
+        reward_fn_details=compute_reward_details,  # For wandb logging
         optimizer=None,  # Will be set below
         device=device,
         init_logZ=0.0,  # Start with Z=1
