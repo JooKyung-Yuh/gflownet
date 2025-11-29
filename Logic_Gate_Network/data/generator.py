@@ -99,7 +99,7 @@ def save_to_csv(samples:list[list[int]], label:str, filename=None) -> str:
   Returns:
       str: Path to the saved CSV file.
   """
-  output_dir = "Logic_Gate_Network/data/csv" 
+  output_dir = "data/csv"
   os.makedirs(output_dir, exist_ok=True)
 
   if filename is None:
@@ -129,7 +129,7 @@ def save_to_json(samples:list[list[int]], rule:BaseRule, label:str, filename=Non
   Returns:
       str: Path to the saved JSON file.
   """
-  output_dir = "Logic_Gate_Network/data/json"
+  output_dir = "data/json"
   os.makedirs(output_dir, exist_ok=True)
   
   if filename is None:

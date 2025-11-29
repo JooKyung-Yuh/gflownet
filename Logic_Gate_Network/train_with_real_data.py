@@ -23,7 +23,7 @@ from gflownet.training import LGNTrainer
 from gflownet.lgn_mdp import LGNMDP
 from gflownet.action_space import LGNActionSpace
 from reward.reward_fn import RewardFunction
-from data.generator import RealDataGenerator, FakeDataGenerator
+from data.generator import RealDataGenerator, FakeDataGenerator, save_to_csv, save_to_json
 from data.dataset import LGNDataset
 from rules.rule_1 import Rule1_NoConsecutive1s
 
@@ -224,6 +224,13 @@ def main():
         # Save to cache
         if not args.no_cache:
             save_cached_data(cache_path, real_samples, fake_samples)
+
+        # Save to CSV and JSON for inspection
+        save_to_csv(real_samples, "real")
+        save_to_csv(fake_samples, "fake")
+        save_to_json(real_samples, rule, "real")
+        save_to_json(fake_samples, rule, "fake")
+        print(f"  ✅ Saved data to data/csv/ and data/json/")
 
     # Step 2: Split train/test
     print(f"\n[2/5] Splitting train/test...")
