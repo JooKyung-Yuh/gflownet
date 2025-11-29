@@ -26,14 +26,46 @@ Based on torchgfn TB implementation and notion.md specifications.
 import torch
 import torch.nn as nn
 import numpy as np
-from typing import Dict, List, Tuple, Callable, Union
+from typing import Dict, List, Tuple, Callable, Union, TypedDict
 from dataclasses import dataclass
+from collections import Counter
 import time
 from lgn.network import LGNState
 from .policy_network import LGNPolicyNetwork
 from .policy_network_gnn import LGNGNNPolicy
 from .lgn_mdp import LGNMDP
 from .action_space import LGNActionSpace
+
+
+class TrainStepMetrics(TypedDict):
+    """Type definition for train_step return metrics."""
+    loss: float
+    log_loss: float
+    logZ: float
+    log_pf: float
+    log_reward: float
+    num_trajectories: int
+    mean_total_gates: float
+    mean_connected_gates: float
+    mean_connected_inputs: float
+    gate_type_counts: Dict[str, int]
+    # Distribution metrics for debugging
+    termination_by_max_gates: int
+    termination_by_all_features: int
+    termination_by_stop_action: int
+    connectivity_ratio: float  # mean(connected_inputs / total_inputs)
+    reward_min: float
+    reward_max: float
+    reward_std: float
+    connected_inputs_min: int
+    connected_inputs_max: int
+    # Best/Worst trajectory info
+    best_traj_reward: float
+    best_traj_gates: int
+    best_traj_connected_inputs: int
+    worst_traj_reward: float
+    worst_traj_gates: int
+    worst_traj_connected_inputs: int
 
 
 @dataclass
@@ -43,6 +75,7 @@ class TBTrajectory:
     actions: List[Dict]         # a0, a1, ..., aT-1 (actions including stop)
     log_reward: float           # log R(terminal_state)
     terminal_state: LGNState    # Final state for reward computation
+    termination_reason: str     # 'max_gates' or 'all_features' or 'stop_action'
 
 
 class LGNTrainer:
@@ -185,6 +218,14 @@ class LGNTrainer:
                 is_stop = 'action' in sampled_action and sampled_action['action'] == 'stop'
 
                 if is_stop:
+                    # Determine termination reason
+                    if lgn.get_num_gates() >= lgn.max_gates:
+                        termination_reason = 'max_gates'
+                    elif len(lgn.get_features_used()) >= lgn.num_inputs:
+                        termination_reason = 'all_features'
+                    else:
+                        termination_reason = 'stop_action'
+
                     # Compute log reward at terminal state
                     reward = self.reward_fn(lgn)
                     # reward_fn returns actual reward, convert to log
@@ -198,7 +239,8 @@ class LGNTrainer:
             states=states,
             actions=actions,
             log_reward=log_reward,
-            terminal_state=lgn.copy()
+            terminal_state=lgn.copy(),
+            termination_reason=termination_reason
         )
 
     def _find_action_index(self, valid_actions: List[Dict], target_action: Dict) -> int:
@@ -281,7 +323,7 @@ class LGNTrainer:
         """
         return [self.sample_trajectory() for _ in range(batch_size)]
 
-    def train_step(self, batch_size: int) -> Tuple[float, Dict[str, float]]:
+    def train_step(self, batch_size: int) -> Tuple[float, TrainStepMetrics]:
         """
         Execute one training step with TB Loss.
 
@@ -303,7 +345,7 @@ class LGNTrainer:
 
         Returns:
         --------
-        Tuple[float, Dict[str, float]]
+        Tuple[float, TrainStepMetrics]
             - loss: Scalar loss value
             - metrics: Dictionary of training metrics
         """
@@ -345,18 +387,65 @@ class LGNTrainer:
         self.optimizer.step()
 
         # Compute metrics
-        mean_log_pf = np.mean(log_pfs)
-        mean_log_reward = np.mean(log_rewards)
-        mean_reward = np.exp(mean_log_reward)  # Convert back to actual reward
+        mean_log_pf = float(np.mean(log_pfs))
+        mean_log_reward = float(np.mean(log_rewards))
 
-        metrics = {
+        # Collect gate usage statistics from trajectories
+        total_gates_list = []
+        connected_gates_list = []
+        connected_inputs_list = []
+        gate_type_totals = Counter()
+        termination_counts = {'max_gates': 0, 'all_features': 0, 'stop_action': 0}
+
+        for traj in trajectories:
+            stats = traj.terminal_state.get_gate_usage_stats()
+            total_gates_list.append(stats['total_gates'])
+            connected_gates_list.append(stats['connected_gates'])
+            connected_inputs_list.append(stats['connected_inputs'])
+            gate_type_totals.update(stats['gate_type_counts'])
+            termination_counts[traj.termination_reason] += 1
+
+        # Compute connectivity ratio (connected_inputs / total_inputs) per trajectory
+        num_inputs = self.mdp.num_inputs
+        connectivity_ratios = [ci / num_inputs for ci in connected_inputs_list]
+
+        # Find best and worst trajectories by reward
+        best_idx = int(np.argmax(log_rewards))
+        worst_idx = int(np.argmin(log_rewards))
+        best_traj = trajectories[best_idx]
+        worst_traj = trajectories[worst_idx]
+        best_stats = best_traj.terminal_state.get_gate_usage_stats()
+        worst_stats = worst_traj.terminal_state.get_gate_usage_stats()
+
+        metrics: TrainStepMetrics = {
             'loss': total_loss.item(),
-            # 'logZ': self.logZ.item(),  # 기존: learnable parameter
-            'logZ': logZ.item(),  # 새로운 방식: batch에서 계산한 logZ
+            'log_loss': float(np.log(total_loss.item() + 1e-8)),
+            'logZ': logZ.item(),
             'log_pf': mean_log_pf,
             'log_reward': mean_log_reward,
-            'mean_reward': mean_reward,
             'num_trajectories': batch_size,
+            # Gate usage statistics
+            'mean_total_gates': float(np.mean(total_gates_list)),
+            'mean_connected_gates': float(np.mean(connected_gates_list)),
+            'mean_connected_inputs': float(np.mean(connected_inputs_list)),
+            'gate_type_counts': dict(gate_type_totals),
+            # Distribution metrics for debugging
+            'termination_by_max_gates': termination_counts['max_gates'],
+            'termination_by_all_features': termination_counts['all_features'],
+            'termination_by_stop_action': termination_counts['stop_action'],
+            'connectivity_ratio': float(np.mean(connectivity_ratios)),
+            'reward_min': float(np.min(log_rewards)),
+            'reward_max': float(np.max(log_rewards)),
+            'reward_std': float(np.std(log_rewards)),
+            'connected_inputs_min': int(np.min(connected_inputs_list)),
+            'connected_inputs_max': int(np.max(connected_inputs_list)),
+            # Best/Worst trajectory info
+            'best_traj_reward': log_rewards[best_idx],
+            'best_traj_gates': best_stats['total_gates'],
+            'best_traj_connected_inputs': best_stats['connected_inputs'],
+            'worst_traj_reward': log_rewards[worst_idx],
+            'worst_traj_gates': worst_stats['total_gates'],
+            'worst_traj_connected_inputs': worst_stats['connected_inputs'],
         }
 
         # Update statistics
@@ -410,10 +499,14 @@ class LGNTrainer:
 
         all_metrics = {
             'loss': [],
+            'log_loss': [],
             'logZ': [],
             'log_pf': [],
             'log_reward': [],
-            'mean_reward': [],
+            'mean_total_gates': [],
+            'mean_connected_gates': [],
+            'mean_connected_inputs': [],
+            'gate_type_counts': [],  # List of dicts per step
         }
 
         start_time = time.time()
@@ -436,22 +529,36 @@ class LGNTrainer:
 
             # Log metrics
             all_metrics['loss'].append(metrics['loss'])
+            all_metrics['log_loss'].append(metrics['log_loss'])
             all_metrics['logZ'].append(metrics['logZ'])
             all_metrics['log_pf'].append(metrics['log_pf'])
             all_metrics['log_reward'].append(metrics['log_reward'])
-            all_metrics['mean_reward'].append(metrics['mean_reward'])
+            all_metrics['mean_total_gates'].append(metrics['mean_total_gates'])
+            all_metrics['mean_connected_gates'].append(metrics['mean_connected_gates'])
+            all_metrics['mean_connected_inputs'].append(metrics['mean_connected_inputs'])
+            all_metrics['gate_type_counts'].append(metrics['gate_type_counts'])
 
-            # Real-time wandb logging (with log-prefixed names)
+            # Real-time wandb logging
             if wandb_log:
-                log_loss = np.log(metrics['loss'] + 1e-8)
                 wandb.log({
-                    "train/tb_loss": metrics['loss'],
-                    "train/log_tb_loss": log_loss,
+                    "train/log_loss": metrics['log_loss'],
                     "train/logZ": metrics['logZ'],
                     "train/log_pf": metrics['log_pf'],
                     "train/log_reward": metrics['log_reward'],
-                    "train/mean_reward": metrics['mean_reward'],
                     "train/iter_time": iter_time,
+                    "train/mean_total_gates": metrics['mean_total_gates'],
+                    "train/mean_connected_gates": metrics['mean_connected_gates'],
+                    "train/mean_connected_inputs": metrics['mean_connected_inputs'],
+                    # Distribution metrics
+                    "debug/termination_max_gates_ratio": metrics['termination_by_max_gates'] / batch_size,
+                    "debug/termination_all_features_ratio": metrics['termination_by_all_features'] / batch_size,
+                    "debug/termination_stop_action_ratio": metrics['termination_by_stop_action'] / batch_size,
+                    "debug/connectivity_ratio": metrics['connectivity_ratio'],
+                    "debug/reward_min": metrics['reward_min'],
+                    "debug/reward_max": metrics['reward_max'],
+                    "debug/reward_std": metrics['reward_std'],
+                    "debug/connected_inputs_min": metrics['connected_inputs_min'],
+                    "debug/connected_inputs_max": metrics['connected_inputs_max'],
                 }, step=i)
 
             # Periodic evaluation (FN/FP tracking)
@@ -463,19 +570,44 @@ class LGNTrainer:
             # Print progress
             if verbose and (i % log_every == 0 or i == num_iterations - 1):
                 elapsed = time.time() - start_time
-                iter_loss = metrics['loss']
-                iter_log_loss = np.log(iter_loss + 1e-8)
-                iter_logZ = metrics['logZ']
-                iter_log_pf = metrics['log_pf']
-                iter_log_reward = metrics['log_reward']
-                # Clear the progress line and print full metrics
-                print(f"\r  Step {i+1}/{num_iterations} | "
-                      f"log_Loss: {iter_log_loss:.4f} | "
-                      f"logZ: {iter_logZ:.4f} | "
-                      f"log_pf: {iter_log_pf:.4f} | "
-                      f"log_R: {iter_log_reward:.4f} | "
-                      f"Iter: {iter_time:.1f}s | "
-                      f"Total: {elapsed:.1f}s")
+                # Clear the progress line and print detailed batch analysis
+                print(f"\r{'='*80}")
+                print(f"  Step {i+1}/{num_iterations} | Time: {iter_time:.1f}s | Elapsed: {elapsed:.0f}s")
+                print(f"  {'─'*76}")
+
+                # Loss and basic metrics
+                print(f"  Loss: log_L={metrics['log_loss']:.2f} | "
+                      f"logZ={metrics['logZ']:.2f} | "
+                      f"log_pf={metrics['log_pf']:.2f} | "
+                      f"log_R={metrics['log_reward']:.2f}")
+
+                # Termination reason analysis
+                term_max = metrics['termination_by_max_gates']
+                term_feat = metrics['termination_by_all_features']
+                term_stop = metrics['termination_by_stop_action']
+                print(f"  Termination: max_gates={term_max}/{batch_size} ({100*term_max/batch_size:.0f}%) | "
+                      f"all_features={term_feat}/{batch_size} ({100*term_feat/batch_size:.0f}%) | "
+                      f"stop_action={term_stop}/{batch_size} ({100*term_stop/batch_size:.0f}%)")
+
+                # Connectivity analysis
+                num_inputs = self.mdp.num_inputs
+                print(f"  Connectivity: ratio={metrics['connectivity_ratio']:.2f} | "
+                      f"connected_inputs=[{metrics['connected_inputs_min']}, {metrics['connected_inputs_max']}] "
+                      f"(mean={metrics['mean_connected_inputs']:.1f}/{num_inputs})")
+
+                # Reward distribution
+                print(f"  Reward: min={metrics['reward_min']:.2f} | "
+                      f"max={metrics['reward_max']:.2f} | "
+                      f"mean={metrics['log_reward']:.2f} | "
+                      f"std={metrics['reward_std']:.2f}")
+
+                # Best/Worst trajectory
+                print(f"  Best:  reward={metrics['best_traj_reward']:.2f} | "
+                      f"gates={metrics['best_traj_gates']} | "
+                      f"connected_inputs={metrics['best_traj_connected_inputs']}/{num_inputs}")
+                print(f"  Worst: reward={metrics['worst_traj_reward']:.2f} | "
+                      f"gates={metrics['worst_traj_gates']} | "
+                      f"connected_inputs={metrics['worst_traj_connected_inputs']}/{num_inputs}")
 
         # Final newline
         if verbose:

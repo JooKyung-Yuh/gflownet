@@ -131,14 +131,14 @@ class LGNState:
   def get_features_used(self) -> set[int]:
     """
     Get the set of original input features used by the network.
-    
+
     This method traverses all gates and collects indices that reference
     original input features (indices < num_inputs), ignoring gate outputs.
-    
+
     Returns:
         set[int]: Set of input feature indices (0 to num_inputs-1) that are
                   referenced by at least one gate in the network.
-    
+
     Example:
         >>> lgn = LGNState(num_inputs=10, max_gates=15)
         >>> lgn.get_features_used()
@@ -156,6 +156,95 @@ class LGNState:
         if idx < self.num_inputs:  # Only original input features
           features.add(idx)
     return features
+
+  def get_connected_inputs_to_output(self) -> set[int]:
+    """
+    Get the set of input features that are connected to the final output.
+
+    This method traces backwards from the last gate to find all input features
+    that contribute to the final output. This is different from get_features_used()
+    which counts ALL features used by ANY gate, even if they don't connect to output.
+
+    Returns:
+        set[int]: Set of input indices (0 to num_inputs-1) connected to final output.
+
+    Example:
+        >>> lgn = LGNState(num_inputs=5, max_gates=10)
+        >>> lgn.add_gate(GateType.AND, [0, 1])    # Gate 0, output at 5
+        >>> lgn.add_gate(GateType.OR, [2, 3])     # Gate 1, output at 6 (disconnected!)
+        >>> lgn.add_gate(GateType.NOT, [5])       # Gate 2, output at 7, uses Gate 0
+        >>> lgn.get_features_used()
+        {0, 1, 2, 3}  # All features used by some gate
+        >>> lgn.get_connected_inputs_to_output()
+        {0, 1}  # Only features connected to final output (Gate 2 -> Gate 0)
+    """
+    if len(self.gates) == 0:
+      return set()
+
+    # Start from last gate and trace backwards
+    connected_nodes = set()
+    to_visit = [self.num_inputs + len(self.gates) - 1]  # Last gate output index
+
+    while to_visit:
+      node_idx = to_visit.pop()
+      if node_idx in connected_nodes:
+        continue
+      connected_nodes.add(node_idx)
+
+      if node_idx < self.num_inputs:
+        # This is an input feature, don't trace further
+        continue
+
+      # This is a gate output, trace its inputs
+      gate_idx = node_idx - self.num_inputs
+      if 0 <= gate_idx < len(self.gates):
+        for input_idx in self.gates[gate_idx].inputs:
+          to_visit.append(input_idx)
+
+    # Filter to only input features
+    return {idx for idx in connected_nodes if idx < self.num_inputs}
+
+  def get_gate_usage_stats(self) -> dict:
+    """
+    Get statistics about gate usage in the network.
+
+    Returns:
+        dict: Contains:
+            - 'total_gates': Total number of gates
+            - 'connected_gates': Number of gates connected to final output
+            - 'connected_inputs': Number of inputs connected to final output
+            - 'total_inputs': Total number of inputs
+            - 'gate_type_counts': Dict of gate type -> count
+    """
+    from collections import Counter
+
+    stats = {
+      'total_gates': len(self.gates),
+      'total_inputs': self.num_inputs,
+      'connected_inputs': len(self.get_connected_inputs_to_output()),
+      'features_used': len(self.get_features_used()),
+      'gate_type_counts': Counter(gate.gate_type.value for gate in self.gates)
+    }
+
+    # Count connected gates
+    if len(self.gates) == 0:
+      stats['connected_gates'] = 0
+    else:
+      connected_nodes = set()
+      to_visit = [self.num_inputs + len(self.gates) - 1]
+      while to_visit:
+        node_idx = to_visit.pop()
+        if node_idx in connected_nodes:
+          continue
+        connected_nodes.add(node_idx)
+        if node_idx >= self.num_inputs:
+          gate_idx = node_idx - self.num_inputs
+          if 0 <= gate_idx < len(self.gates):
+            for input_idx in self.gates[gate_idx].inputs:
+              to_visit.append(input_idx)
+      stats['connected_gates'] = len([n for n in connected_nodes if n >= self.num_inputs])
+
+    return stats
   
   def is_terminal(self)->bool:
     """

@@ -55,7 +55,7 @@ reward_function:
   #
   # Higher C → Prioritize correctly classifying Real samples
   # Lower C → Prioritize correctly rejecting Fake samples
-  C: 10.0
+  C: 1.0
 
   # epsilon: Numerical stability constant
   # ---------------------------------------
