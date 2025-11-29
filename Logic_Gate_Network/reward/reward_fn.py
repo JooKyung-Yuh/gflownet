@@ -313,7 +313,7 @@ class RewardFunction:
     return -1 * self.lambda_complexity * lgn_state.get_num_gates()
   
     
-  def compute_reward(self, lgn_state:LGNState, real_data:list[list[int]], fake_data:list[list[int]]) -> float:
+  def compute_reward(self, lgn_state:LGNState, real_data:list[list[int]], fake_data:list[list[int]], return_details:bool=False):
     """
     Compute the reward for a Logic Gate Network on Real and Fake datasets.
 
@@ -428,6 +428,20 @@ class RewardFunction:
 
     # Step 3: Sum all terms to get final log-reward
     log_reward = real_term + fake_term + complexity
+
+    if return_details:
+      return {
+        'log_reward': log_reward,
+        'real_error_count': real_error_count,
+        'fake_acceptance_count': fake_acceptance_count,
+        'real_term': real_term,
+        'fake_term': fake_term,
+        'complexity': complexity,
+        'num_gates': lgn_state.get_num_gates(),
+        'num_real': len(real_data),
+        'num_fake': len(fake_data),
+      }
+
     return log_reward
     
     
