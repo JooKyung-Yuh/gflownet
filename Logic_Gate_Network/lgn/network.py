@@ -405,3 +405,42 @@ class LGNState:
 
       # Update the gate's inputs with reindexed values
       gate.inputs = reindexed_inputs
+
+  def get_root_gates(self) -> list[int]:
+    """
+    Get the indices of root gates (gates whose outputs are not used by any other gate).
+
+    Root gates are the "final" gates in the DAG - their outputs are not consumed
+    by any subsequent gate. These are the natural candidates for the final output.
+
+    Returns:
+        list[int]: List of gate indices (0-indexed into self.gates) that are root gates.
+                   Empty list if no gates exist.
+
+    Example:
+        >>> lgn = LGNState(num_inputs=5, max_gates=10)
+        >>> lgn.add_gate(GateType.AND, [0, 1])    # Gate 0, output at 5
+        >>> lgn.add_gate(GateType.OR, [2, 3])     # Gate 1, output at 6
+        >>> lgn.add_gate(GateType.NOT, [5])       # Gate 2, output at 7, uses Gate 0
+        >>> lgn.get_root_gates()
+        [1, 2]  # Gate 1 (OR) and Gate 2 (NOT) are roots
+                # Gate 0 is NOT a root because Gate 2 uses its output
+    """
+    if len(self.gates) == 0:
+      return []
+
+    # Collect all gate output indices that are used as inputs by other gates
+    used_as_input = set()
+    for gate in self.gates:
+      for inp in gate.inputs:
+        if inp >= self.num_inputs:  # This is a gate output, not an original input
+          used_as_input.add(inp)
+
+    # Root gates are those whose outputs are NOT used by any other gate
+    root_gates = []
+    for gate_idx in range(len(self.gates)):
+      gate_output_idx = self.num_inputs + gate_idx
+      if gate_output_idx not in used_as_input:
+        root_gates.append(gate_idx)
+
+    return root_gates
