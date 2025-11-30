@@ -32,7 +32,7 @@ import torch_geometric.nn as gnn
 from typing import List, Dict, Any, Tuple, Optional
 from lgn.network import LGNState
 from lgn.gates import GateType, GATE_TYPE_TO_IDX
-from .lgn_to_graph import lgn_to_graph
+from .lgn_to_graph import lgn_to_graph, batch_lgn_to_batched_graph
 
 
 def make_mlp(layer_sizes: List[int], activation=nn.LeakyReLU(), final_activation=False):
@@ -383,14 +383,351 @@ class LGNGNNPolicy(nn.Module):
         if device is None:
             device = next(self.parameters()).device
 
+        # Convert LGN to graph ONCE
+        graph_data = lgn_to_graph(lgn, device)
+
+        # Forward pass ONCE (instead of calling compute_q_values twice)
+        node_logits, gate_type_logits, stop_logit = self.forward(graph_data)
+
         # Compute Q-values for gate actions
         if len(gate_actions) > 0:
-            action_q = self.compute_q_values(lgn, gate_actions, device)
+            q_values = []
+            for action in gate_actions:
+                gate_type = action['gate_type']
+                input_indices = action['input_indices']
+
+                # Q-value = sum of node logits + gate type logit
+                node_q = node_logits[list(input_indices)].sum()
+                gate_type_idx = GATE_TYPE_TO_IDX[gate_type] - 1
+                gate_q = gate_type_logits[gate_type_idx]
+
+                q_values.append(node_q + gate_q)
+
+            action_q = torch.stack(q_values)
         else:
             action_q = torch.empty(0, device=device)
 
-        # Compute Q-value for stop action
-        stop_action = [{'action': 'stop'}]
-        stop_q = self.compute_q_values(lgn, stop_action, device)[0]
+        return action_q, stop_logit
 
-        return action_q, stop_q
+    def forward_batched(
+        self,
+        batch_data: Batch,
+        num_nodes_per_graph: List[int],
+        has_edges_per_graph: List[bool],
+    ) -> Tuple[List[torch.Tensor], torch.Tensor, torch.Tensor]:
+        """
+        Batched forward pass through GNN for multiple LGN graphs.
+
+        This method processes multiple graphs in a single forward pass,
+        which is much more efficient on GPU than processing one at a time.
+
+        IMPORTANT: Empty graphs (no edges) are handled correctly by tracking
+        which graphs have edges and applying message passing selectively.
+
+        Parameters:
+        -----------
+        batch_data : Batch
+            PyTorch Geometric Batch object containing multiple graphs
+            Created by batch_lgn_to_batched_graph()
+        num_nodes_per_graph : List[int]
+            Number of nodes in each graph (for splitting outputs)
+        has_edges_per_graph : List[bool]
+            Whether each graph has edges (for selective message passing)
+
+        Returns:
+        --------
+        Tuple[List[torch.Tensor], torch.Tensor, torch.Tensor]
+            - node_logits_list: List of node logits per graph
+              Each element has shape [num_nodes_i] for graph i
+            - gate_type_logits: [batch_size, num_gate_types]
+            - stop_logits: [batch_size]
+
+        Example:
+        --------
+        >>> batch, num_nodes_list, _, has_edges = batch_lgn_to_batched_graph(lgns, device)
+        >>> node_logits_list, gate_type_logits, stop_logits = policy.forward_batched(batch, num_nodes_list, has_edges)
+        >>> # node_logits_list[0] has shape [num_nodes_of_lgn_0]
+        >>> # gate_type_logits has shape [batch_size, 16]
+        >>> # stop_logits has shape [batch_size]
+        """
+        batch_size = len(num_nodes_per_graph)
+        device = batch_data.x.device
+
+        if batch_size == 0:
+            return [], torch.empty(0, self.num_gate_types, device=device), torch.empty(0, device=device)
+
+        # ===== Node Embedding =====
+        # batch_data.x shape: [total_nodes, 1]
+        node_types = batch_data.x.squeeze(-1)  # [total_nodes]
+        out = self.node_embedding(node_types)  # [total_nodes, node_emb_dim]
+
+        # ===== Edge Embedding =====
+        if batch_data.edge_attr.numel() > 0:
+            edge_types = batch_data.edge_attr[:, 0]  # [total_edges]
+            edge_emb = self.edge_embedding(edge_types)  # [total_edges, node_emb_dim]
+            edge_features = edge_emb
+        else:
+            edge_features = torch.empty((0, self.node_emb_dim), device=out.device)
+
+        # ===== Node Preprocessing =====
+        out = self.node2emb(out)
+
+        # ===== GNN Message Passing with GRU =====
+        # Handle empty graphs (no edges) correctly by processing them separately
+        # This ensures identical behavior to forward() for empty graphs
+
+        # Identify node ranges for each graph
+        node_ranges = []
+        start_idx = 0
+        for num_nodes in num_nodes_per_graph:
+            end_idx = start_idx + num_nodes
+            node_ranges.append((start_idx, end_idx))
+            start_idx = end_idx
+
+        # Check if we have any empty graphs (no edges)
+        has_any_empty = not all(has_edges_per_graph)
+
+        if has_any_empty:
+            # Process graphs separately to handle empty graphs correctly
+            # Empty graphs: skip message passing (m = out)
+            # Non-empty graphs: apply message passing
+
+            h = out.unsqueeze(0)  # [1, total_nodes, node_emb_dim]
+
+            for conv_step in range(self.num_conv_steps):
+                # Initialize m with out (for empty graphs)
+                m = out.clone()
+
+                # Apply conv only to nodes belonging to graphs with edges
+                if batch_data.edge_index.numel() > 0:
+                    # Compute conv for all nodes (but only nodes with edges will be affected)
+                    conv_out = F.leaky_relu(self.conv(out, batch_data.edge_index, edge_features))
+
+                    # Replace m values only for graphs that have edges
+                    for graph_idx, (start, end) in enumerate(node_ranges):
+                        if has_edges_per_graph[graph_idx]:
+                            m[start:end] = conv_out[start:end]
+                        # else: m[start:end] stays as out[start:end] (no message passing)
+
+                out, h = self.gru(m.unsqueeze(0), h)
+                out = out.squeeze(0)
+        else:
+            # All graphs have edges - can process everything together efficiently
+            h = out.unsqueeze(0)
+
+            for conv_step in range(self.num_conv_steps):
+                if batch_data.edge_index.numel() > 0:
+                    m = F.leaky_relu(self.conv(out, batch_data.edge_index, edge_features))
+                else:
+                    m = out
+
+                out, h = self.gru(m.unsqueeze(0), h)
+                out = out.squeeze(0)
+
+        # ===== Output Heads =====
+
+        # 1. Node selection logits (per-node)
+        all_node_logits = self.node_selector(out).squeeze(-1)  # [total_nodes]
+
+        # Split node logits by graph
+        node_logits_list = []
+        for start, end in node_ranges:
+            node_logits_list.append(all_node_logits[start:end])
+
+        # 2. Graph-level embeddings for gate_type and stop heads
+        # Use scatter_mean to compute per-graph mean embeddings
+        # batch_data.batch: [total_nodes] with values 0, 0, ..., 1, 1, ..., 2, 2, ...
+        graph_emb = gnn.global_mean_pool(out, batch_data.batch)  # [batch_size, node_emb_dim]
+
+        # 3. Gate type logits (per-graph)
+        gate_type_logits = self.gate_type_head(graph_emb)  # [batch_size, num_gate_types]
+
+        # 4. Stop logits (per-graph)
+        stop_logits = self.stop_head(graph_emb).squeeze(-1)  # [batch_size]
+
+        return node_logits_list, gate_type_logits, stop_logits
+
+    def forward_policy_batched(
+        self,
+        lgns: List[LGNState],
+        gate_actions_per_lgn: List[List[Dict[str, Any]]],
+        device: Optional[torch.device] = None
+    ) -> Tuple[List[torch.Tensor], torch.Tensor]:
+        """
+        Batched forward policy for multiple LGNs.
+
+        This is the batched version of forward_policy() that processes
+        multiple LGNs in a single GNN forward pass.
+
+        Parameters:
+        -----------
+        lgns : List[LGNState]
+            List of LGN states to process
+        gate_actions_per_lgn : List[List[Dict[str, Any]]]
+            For each LGN, a list of valid gate actions (no stop action)
+        device : torch.device
+            Device to run on
+
+        Returns:
+        --------
+        Tuple[List[torch.Tensor], torch.Tensor]
+            - action_q_list: List of Q-values for gate actions per LGN
+              action_q_list[i] has shape [num_gate_actions_for_lgn_i]
+            - stop_q: Q-values for stop action per LGN [batch_size]
+        """
+        if device is None:
+            device = next(self.parameters()).device
+
+        batch_size = len(lgns)
+
+        if batch_size == 0:
+            return [], torch.empty(0, device=device)
+
+        # Convert all LGNs to batched graph (single operation)
+        batch_data, num_nodes_per_graph, num_inputs_per_graph, has_edges_per_graph = batch_lgn_to_batched_graph(lgns, device)
+
+        # Single batched forward pass
+        node_logits_list, gate_type_logits, stop_logits = self.forward_batched(
+            batch_data, num_nodes_per_graph, has_edges_per_graph
+        )
+
+        # Compute Q-values for each LGN's gate actions
+        action_q_list = []
+
+        for i, (node_logits, gate_actions) in enumerate(zip(node_logits_list, gate_actions_per_lgn)):
+            if len(gate_actions) > 0:
+                q_values = []
+                for action in gate_actions:
+                    gate_type = action['gate_type']
+                    input_indices = action['input_indices']
+
+                    # Q-value = sum of node logits + gate type logit
+                    node_q = node_logits[list(input_indices)].sum()
+                    gate_type_idx = GATE_TYPE_TO_IDX[gate_type] - 1
+                    gate_q = gate_type_logits[i, gate_type_idx]
+
+                    q_values.append(node_q + gate_q)
+
+                action_q = torch.stack(q_values)
+            else:
+                action_q = torch.empty(0, device=device)
+
+            action_q_list.append(action_q)
+
+        return action_q_list, stop_logits
+
+    def compute_q_values_batched(
+        self,
+        lgns: List[LGNState],
+        actions_per_lgn: List[List[Dict[str, Any]]],
+        device: Optional[torch.device] = None
+    ) -> List[torch.Tensor]:
+        """
+        Batched version of compute_q_values() for multiple LGNs.
+
+        Computes Q(s, a) for all actions of multiple LGNs in a single
+        batched forward pass.
+
+        Parameters:
+        -----------
+        lgns : List[LGNState]
+            List of LGN states to process
+        actions_per_lgn : List[List[Dict[str, Any]]]
+            For each LGN, list of all valid actions (including stop action)
+        device : torch.device
+            Device to run on
+
+        Returns:
+        --------
+        List[torch.Tensor]
+            Q-values for each LGN's actions
+            q_values_list[i] has shape [num_actions_for_lgn_i]
+        """
+        if device is None:
+            device = next(self.parameters()).device
+
+        batch_size = len(lgns)
+
+        if batch_size == 0:
+            return []
+
+        # Convert all LGNs to batched graph
+        batch_data, num_nodes_per_graph, num_inputs_per_graph, has_edges_per_graph = batch_lgn_to_batched_graph(lgns, device)
+
+        # Single batched forward pass
+        node_logits_list, gate_type_logits, stop_logits = self.forward_batched(
+            batch_data, num_nodes_per_graph, has_edges_per_graph
+        )
+
+        # Compute Q-values for each LGN
+        q_values_list = []
+
+        for i, (node_logits, actions) in enumerate(zip(node_logits_list, actions_per_lgn)):
+            q_values = []
+
+            for action in actions:
+                if 'action' in action and action['action'] == 'stop':
+                    # Stop action
+                    q = stop_logits[i]
+                else:
+                    # Gate addition action
+                    gate_type = action['gate_type']
+                    input_indices = action['input_indices']
+
+                    # Q-value = sum of node logits + gate type logit
+                    node_q = node_logits[list(input_indices)].sum()
+                    gate_type_idx = GATE_TYPE_TO_IDX[gate_type] - 1
+                    gate_q = gate_type_logits[i, gate_type_idx]
+
+                    q = node_q + gate_q
+
+                q_values.append(q)
+
+            if len(q_values) > 0:
+                q_values_list.append(torch.stack(q_values))
+            else:
+                q_values_list.append(torch.empty(0, device=device))
+
+        return q_values_list
+
+    def compute_action_logprobs_batched(
+        self,
+        lgns: List[LGNState],
+        actions_per_lgn: List[List[Dict[str, Any]]],
+        device: Optional[torch.device] = None
+    ) -> List[torch.Tensor]:
+        """
+        Batched version of compute_action_logprobs() for multiple LGNs.
+
+        Computes log P(a|s) for all actions of multiple LGNs in a single
+        batched forward pass.
+
+        This converts Q-values to probabilities via softmax:
+        P(a|s) = exp(Q(s,a)) / sum_a' exp(Q(s,a'))
+
+        Parameters:
+        -----------
+        lgns : List[LGNState]
+            List of LGN states to process
+        actions_per_lgn : List[List[Dict[str, Any]]]
+            For each LGN, list of all valid actions
+        device : torch.device
+            Device to run on
+
+        Returns:
+        --------
+        List[torch.Tensor]
+            Log probabilities for each LGN's actions
+            log_probs_list[i] has shape [num_actions_for_lgn_i]
+        """
+        q_values_list = self.compute_q_values_batched(lgns, actions_per_lgn, device)
+
+        log_probs_list = []
+        for q_values in q_values_list:
+            if q_values.numel() > 0:
+                log_probs = F.log_softmax(q_values, dim=0)
+            else:
+                log_probs = q_values  # Empty tensor
+            log_probs_list.append(log_probs)
+
+        return log_probs_list

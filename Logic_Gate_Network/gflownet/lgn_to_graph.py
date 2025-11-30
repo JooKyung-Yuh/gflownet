@@ -23,8 +23,8 @@ Graph:
 """
 
 import torch
-from torch_geometric.data import Data
-from typing import List, Optional
+from torch_geometric.data import Data, Batch
+from typing import List, Optional, Tuple
 from lgn.network import LGNState
 from lgn.gates import GateType, GATE_TYPE_TO_IDX
 
@@ -154,3 +154,80 @@ def batch_lgn_to_graph(lgns: List[LGNState], device: Optional[torch.device] = No
         List of graph data objects
     """
     return [lgn_to_graph(lgn, device) for lgn in lgns]
+
+
+def batch_lgn_to_batched_graph(
+    lgns: List[LGNState],
+    device: Optional[torch.device] = None
+) -> Tuple[Batch, List[int], List[int], List[bool]]:
+    """
+    Convert multiple LGN states to a single batched PyTorch Geometric Batch object.
+
+    This enables efficient batched GNN forward passes by combining multiple
+    graphs into one large disconnected graph.
+
+    Parameters:
+    -----------
+    lgns : List[LGNState]
+        List of LGN states to batch together
+    device : torch.device
+        Device to place tensors on (default: cpu)
+
+    Returns:
+    --------
+    Tuple[Batch, List[int], List[int], List[bool]]
+        - batch: PyTorch Geometric Batch object containing all graphs
+                 Access individual graph assignments via batch.batch tensor
+        - num_nodes_per_graph: List of node counts for each graph
+        - num_inputs_per_graph: List of num_inputs for each graph
+        - has_edges_per_graph: List of booleans indicating if each graph has edges
+
+    Example:
+    --------
+    >>> lgns = [lgn1, lgn2, lgn3]  # 3 LGN states
+    >>> batch, num_nodes_list, num_inputs_list, has_edges = batch_lgn_to_batched_graph(lgns, device)
+    >>> # batch.x has shape [total_nodes, 1]
+    >>> # batch.batch has shape [total_nodes] with values 0, 0, ..., 1, 1, ..., 2, 2, ...
+    >>> # Use batch.batch to identify which graph each node belongs to
+    >>> # has_edges[i] is True if lgns[i] has at least one gate (edge)
+
+    Notes:
+    ------
+    - PyG's Batch.from_data_list() automatically handles node index remapping
+    - Edge indices are automatically offset to refer to correct nodes in batched graph
+    - Use batch.batch tensor to separate outputs per graph after forward pass
+    - has_edges_per_graph is needed for correct handling of empty graphs in message passing
+    """
+    if device is None:
+        device = torch.device('cpu')
+
+    if len(lgns) == 0:
+        # Return empty batch
+        empty_data = Data(
+            x=torch.empty((0, 1), dtype=torch.long, device=device),
+            edge_index=torch.empty((2, 0), dtype=torch.long, device=device),
+            edge_attr=torch.empty((0, 2), dtype=torch.long, device=device),
+        )
+        return Batch.from_data_list([empty_data]), [], [], []
+
+    # Convert each LGN to graph Data object
+    graphs = []
+    num_nodes_per_graph = []
+    num_inputs_per_graph = []
+    has_edges_per_graph = []
+
+    for lgn in lgns:
+        graph = lgn_to_graph(lgn, device)
+        graphs.append(graph)
+        num_nodes_per_graph.append(lgn.num_inputs + len(lgn.gates))
+        num_inputs_per_graph.append(lgn.num_inputs)
+        has_edges_per_graph.append(len(lgn.gates) > 0)  # Has edges if has gates
+
+    # Create batched graph using PyTorch Geometric's Batch
+    # This automatically:
+    # - Concatenates node features
+    # - Offsets edge indices appropriately
+    # - Creates batch.batch tensor for graph membership
+    batch = Batch.from_data_list(graphs)
+
+    return batch, num_nodes_per_graph, num_inputs_per_graph, has_edges_per_graph

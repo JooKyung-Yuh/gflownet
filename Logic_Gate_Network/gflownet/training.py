@@ -340,6 +340,102 @@ class LGNTrainer:
         """
         return [self.sample_trajectory() for _ in range(batch_size)]
 
+    def compute_tb_loss_batched(
+        self,
+        trajectories: List[TBTrajectory]
+    ) -> Tuple[List[torch.Tensor], List[float], List[float]]:
+        """
+        Compute TB Loss for multiple trajectories using batched forward passes.
+
+        This optimized version groups states by step index and processes them
+        in batches, significantly reducing the number of forward passes.
+
+        TB Loss Formula (per trajectory):
+            score = log P_F(τ) - log R(x)
+            (logZ is computed externally as -mean(scores))
+
+        Parameters:
+        -----------
+        trajectories : List[TBTrajectory]
+            List of sampled trajectories
+
+        Returns:
+        --------
+        Tuple[List[torch.Tensor], List[float], List[float]]
+            - scores: List of score tensors (one per trajectory)
+            - log_pfs: List of log forward probabilities
+            - log_rewards: List of log rewards
+        """
+        if len(trajectories) == 0:
+            return [], [], []
+
+        num_trajectories = len(trajectories)
+
+        # ===================================================================
+        # Step 1: Organize trajectory data by step index
+        # ===================================================================
+        # Group states and actions by step index for batched processing
+        # max_steps = maximum trajectory length
+        max_steps = max(len(traj.states) for traj in trajectories)
+
+        # For each step, collect (trajectory_idx, state, action, valid_actions)
+        steps_data: List[List[Tuple[int, LGNState, Dict, List[Dict]]]] = [
+            [] for _ in range(max_steps)
+        ]
+
+        for traj_idx, traj in enumerate(trajectories):
+            for step_idx, (state, action) in enumerate(zip(traj.states, traj.actions)):
+                valid_actions = self.action_space.get_valid_actions(state)
+                steps_data[step_idx].append((traj_idx, state, action, valid_actions))
+
+        # ===================================================================
+        # Step 2: Process each step with batched forward pass
+        # ===================================================================
+        # Accumulate log P_F for each trajectory
+        log_pf_accumulators = [torch.tensor(0.0, device=self.device) for _ in range(num_trajectories)]
+
+        for step_idx, step_entries in enumerate(steps_data):
+            if len(step_entries) == 0:
+                continue
+
+            # Extract data for this step's batch
+            traj_indices = [entry[0] for entry in step_entries]
+            states = [entry[1] for entry in step_entries]
+            actions = [entry[2] for entry in step_entries]
+            valid_actions_per_state = [entry[3] for entry in step_entries]
+
+            # Batched forward pass for all states at this step
+            log_probs_list = self.policy.compute_action_logprobs_batched(
+                states, valid_actions_per_state, self.device
+            )
+
+            # For each state, find the log prob of the taken action
+            for batch_idx, (traj_idx, action, valid_actions, log_probs) in enumerate(
+                zip(traj_indices, actions, valid_actions_per_state, log_probs_list)
+            ):
+                action_idx = self._find_action_index(valid_actions, action)
+                log_pf_accumulators[traj_idx] = log_pf_accumulators[traj_idx] + log_probs[action_idx]
+
+        # ===================================================================
+        # Step 3: Compute scores for each trajectory
+        # ===================================================================
+        scores = []
+        log_pfs = []
+        log_rewards = []
+
+        for traj_idx, traj in enumerate(trajectories):
+            total_log_pf = log_pf_accumulators[traj_idx]
+            log_reward = torch.tensor(traj.log_reward, device=self.device)
+
+            # score = log P_F - log R
+            score = total_log_pf - log_reward
+
+            scores.append(score)
+            log_pfs.append(total_log_pf.item())
+            log_rewards.append(traj.log_reward)
+
+        return scores, log_pfs, log_rewards
+
     def train_step(self, batch_size: int) -> Tuple[float, TrainStepMetrics]:
         """
         Execute one training step with TB Loss.
@@ -369,27 +465,15 @@ class LGNTrainer:
         # Sample batch of trajectories
         trajectories = self.sample_batch(batch_size)
 
-        # Compute TB loss for each trajectory
-        scores = []
-        log_pfs = []
-        log_rewards = []
-
-        for traj in trajectories:
-            score, log_pf, log_reward = self.compute_tb_loss(traj)
-            scores.append(score)
-            log_pfs.append(log_pf)
-            log_rewards.append(log_reward)
+        # Compute TB loss for all trajectories using batched forward passes
+        scores, log_pfs, log_rewards = self.compute_tb_loss_batched(trajectories)
 
         # Average loss over batch
         scores_tensor = torch.stack(scores)
         logZ = -scores_tensor.mean().detach()
-        
+
         losses = [(logZ + score).pow(2) for score in scores]
-        
-        # scores_tensor = torch.stack(scores)
-        # losses = (self.logZ + scores_tensor).pow(2)
-        # total_loss = losses.mean()
-        
+
         total_loss = torch.stack(losses).mean()
 
         # Optimize

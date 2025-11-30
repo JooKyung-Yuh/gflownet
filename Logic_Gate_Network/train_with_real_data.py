@@ -120,7 +120,7 @@ def main():
     parser.add_argument('--no-wandb', action='store_true', help='Disable Weights & Biases experiment tracking')
     parser.add_argument('--wandb-project', type=str, default='lgn-gflownet', help='Wandb project name')
     parser.add_argument('--wandb-run-name', type=str, default=None, help='Wandb run name (auto-generated if not specified)')
-    parser.add_argument('--eval-every', type=int, default=50, help='Evaluate FN/FP rates every N iterations')
+    parser.add_argument('--eval-every', type=int, default=10, help='Evaluate FN/FP rates every N iterations')
     parser.add_argument('--eval-samples', type=int, default=5, help='Number of LGNs to sample for evaluation')
     parser.add_argument('--max-and-arity', type=int, default=2,
                         help='Max inputs for AND gates (0=no limit, 2=fast, 4=balanced). Default: 2')
@@ -160,7 +160,25 @@ def main():
     else:
         device = torch.device(args.device)
 
-    # Configuration
+    # Generate timestamp for this run
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = f"{timestamp}_{args.num_inputs}in_{args.max_gates}g_{args.iterations}it"
+
+    # Initialize wandb if enabled (BEFORE printing config so it shows in wandb)
+    if use_wandb:
+        run_name = args.wandb_run_name or run_id
+        wandb.init(
+            project=args.wandb_project,
+            name=run_name,
+            config=vars(args)
+        )
+        print(f"\n✅ Wandb initialized: {wandb.run.name}")
+        print(f"   Dashboard: {wandb.run.url}")
+    else:
+        run_name = run_id
+        print(f"\n⚠️  Wandb disabled (use without --no-wandb to enable)")
+
+    # Configuration (printed AFTER wandb init so it appears in wandb logs)
     print(f"\nConfiguration:")
     print(f"  num_inputs: {args.num_inputs}")
     print(f"  max_gates: {args.max_gates}")
@@ -177,22 +195,41 @@ def main():
     print(f"  temperature: {args.temperature}")
     print(f"  log_interval: {args.log_interval} {'(disabled)' if args.log_interval == 0 else ''}")
 
-    # Generate timestamp for this run
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_id = f"{timestamp}_{args.num_inputs}in_{args.max_gates}g_{args.iterations}it"
+    # Save experiment parameters to file (ALL parser arguments)
+    params_dir = Path("experiments/params")
+    params_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize wandb if enabled
-    if use_wandb:
-        run_name = args.wandb_run_name or run_id
-        wandb.init(
-            project=args.wandb_project,
-            name=run_name,
-            config=vars(args)
-        )
-        print(f"\n✅ Wandb initialized: {wandb.run.name}")
-        print(f"   Dashboard: {wandb.run.url}")
-    else:
-        print(f"\n⚠️  Wandb disabled (use without --no-wandb to enable)")
+    params_filename = f"params_{run_name}.md"
+    params_path = params_dir / params_filename
+
+    # Get all arguments as dictionary
+    all_args = vars(args)
+
+    with open(params_path, 'w') as f:
+        f.write(f"# Experiment Parameters\n\n")
+        f.write(f"**Run Name:** {run_name}\n")
+        f.write(f"**Timestamp:** {timestamp}\n")
+        f.write(f"**Device (resolved):** {device}\n\n")
+        f.write(f"## All Parameters\n\n")
+        f.write(f"| Parameter | Value |\n")
+        f.write(f"|-----------|-------|\n")
+        for key, value in sorted(all_args.items()):
+            f.write(f"| {key} | {value} |\n")
+
+    # Also save as JSON for programmatic access
+    import json
+    params_json_path = params_dir / f"params_{run_name}.json"
+    with open(params_json_path, 'w') as f:
+        save_dict = {
+            'run_name': run_name,
+            'timestamp': timestamp,
+            'device_resolved': str(device),
+            **all_args
+        }
+        json.dump(save_dict, f, indent=2)
+
+    print(f"\n✅ Parameters saved to {params_path}")
+    print(f"✅ Parameters saved to {params_json_path}")
 
     # Step 1: Load or generate training data
     print(f"\n[1/5] Loading/Generating training data...")
