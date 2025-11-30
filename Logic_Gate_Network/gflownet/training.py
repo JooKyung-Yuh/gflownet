@@ -222,9 +222,10 @@ class LGNTrainer:
 
                 # Sample action using Boltzmann distribution with temperature
                 # Higher temperature = more exploration, lower = more exploitation
+                # Note: Move cumsum to CPU to avoid GPU-CPU sync overhead
                 probs = torch.softmax(all_q_values / self.temperature, dim=0)
-                cumsum = torch.cumsum(probs, dim=0)
-                u = torch.rand(1, device=probs.device)
+                cumsum = torch.cumsum(probs, dim=0).cpu()
+                u = torch.rand(1)  # CPU random
                 action_idx = int(torch.searchsorted(cumsum, u).item())
                 action_idx = min(action_idx, len(all_actions) - 1)
 
@@ -435,9 +436,10 @@ class LGNTrainer:
                         all_actions_list = [{'action': 'stop'}]
 
                     # Boltzmann sampling with temperature (same as sample_trajectory)
+                    # Note: probs/cumsum on GPU, but random on CPU to avoid GPU-CPU sync
                     probs = torch.softmax(all_q_values / self.temperature, dim=0)
-                    cumsum = torch.cumsum(probs, dim=0)
-                    u = torch.rand(1, device=probs.device)
+                    cumsum = torch.cumsum(probs, dim=0).cpu()  # Move to CPU once
+                    u = torch.rand(1)  # CPU random - no GPU sync needed
                     action_idx = int(torch.searchsorted(cumsum, u).item())
                     action_idx = min(action_idx, len(all_actions_list) - 1)
 

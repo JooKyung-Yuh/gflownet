@@ -362,46 +362,77 @@ def main():
     print(f"     Policy lr: {args.lr}, logZ lr: {args.lr_logz}")
 
     # Create evaluation function for accuracy tracking
-    def create_eval_fn(policy, mdp, action_space, test_real, test_fake, num_samples):
+    def create_eval_fn(policy, mdp, action_space, test_real, test_fake, num_samples, device):
         """Create evaluation function closure for periodic accuracy evaluation."""
         from lgn import LGNEvaluator
         evaluator = LGNEvaluator()
 
         def eval_fn():
-            """Sample LGNs and compute accuracy on test data."""
+            """Sample LGNs using batched forward and compute accuracy on test data."""
             real_accs = []
             fake_accs = []
 
             with torch.no_grad():
-                for _ in range(num_samples):
-                    # Sample one LGN using greedy policy (argmax)
-                    lgn = LGNState(num_inputs=mdp.num_inputs, max_gates=mdp.max_gates)
+                # Initialize num_samples LGNs
+                lgns = [LGNState(num_inputs=mdp.num_inputs, max_gates=mdp.max_gates)
+                        for _ in range(num_samples)]
+                active_mask = [True] * num_samples
 
-                    while not lgn.is_terminal():
+                # Sample all LGNs in parallel using batched forward
+                while any(active_mask):
+                    active_indices = [i for i, active in enumerate(active_mask) if active]
+                    if len(active_indices) == 0:
+                        break
+
+                    active_lgns = [lgns[i] for i in active_indices]
+
+                    # Get valid actions for each active LGN
+                    gate_actions_per_lgn = []
+                    has_stop_per_lgn = []
+                    for lgn in active_lgns:
                         actions = action_space.get_valid_actions(lgn)
                         gate_actions = [a for a in actions if 'gate_type' in a]
+                        has_stop = any('action' in a and a['action'] == 'stop' for a in actions)
+                        gate_actions_per_lgn.append(gate_actions)
+                        has_stop_per_lgn.append(has_stop)
 
-                        action_q, stop_q = policy.forward_policy(lgn, gate_actions)
+                    # Batched forward pass
+                    action_q_list, stop_q = policy.forward_policy_batched(
+                        active_lgns, gate_actions_per_lgn, device
+                    )
 
-                        # Greedy: take argmax
-                        if len(gate_actions) > 0:
-                            all_q = torch.cat([action_q, stop_q.unsqueeze(0)])
+                    # Greedy action selection for each LGN
+                    for batch_idx, orig_idx in enumerate(active_indices):
+                        gate_actions = gate_actions_per_lgn[batch_idx]
+                        has_stop = has_stop_per_lgn[batch_idx]
+                        action_q = action_q_list[batch_idx]
+                        stop_q_val = stop_q[batch_idx]
+
+                        # Combine Q-values
+                        if len(gate_actions) > 0 and has_stop:
+                            all_q = torch.cat([action_q, stop_q_val.unsqueeze(0)])
                             all_actions = gate_actions + [{'action': 'stop'}]
+                        elif len(gate_actions) > 0:
+                            all_q = action_q
+                            all_actions = gate_actions
                         else:
-                            all_q = stop_q.unsqueeze(0)
+                            all_q = stop_q_val.unsqueeze(0)
                             all_actions = [{'action': 'stop'}]
 
-                        best_idx = all_q.argmax().item()
+                        # Greedy: take argmax (move to CPU to avoid sync overhead)
+                        best_idx = all_q.cpu().argmax().item()
                         best_action = all_actions[best_idx]
 
                         if 'action' in best_action and best_action['action'] == 'stop':
-                            break
+                            active_mask[orig_idx] = False
                         else:
-                            lgn.add_gate(best_action['gate_type'], best_action['input_indices'])
+                            lgns[orig_idx].add_gate(best_action['gate_type'], best_action['input_indices'])
 
-                    # Evaluate on test data
-                    real_outputs = evaluator.evaluate_batch(lgn, test_real)
-                    fake_outputs = evaluator.evaluate_batch(lgn, test_fake)
+                # Evaluate all sampled LGNs
+                for lgn in lgns:
+                    # Use evaluate_final_batch (same as reward_fn) for consistency
+                    real_outputs = evaluator.evaluate_final_batch(lgn, test_real)
+                    fake_outputs = evaluator.evaluate_final_batch(lgn, test_fake)
 
                     # real_acc: Real samples correctly accepted (output 1)
                     real_acc = real_outputs.count(1) / len(test_real)
@@ -424,7 +455,8 @@ def main():
         action_space=action_space,
         test_real=test_real,
         test_fake=test_fake,
-        num_samples=args.eval_samples
+        num_samples=args.eval_samples,
+        device=device
     )
     print(f"  ✅ Evaluation function created (eval_every={args.eval_every}, samples={args.eval_samples})")
 
