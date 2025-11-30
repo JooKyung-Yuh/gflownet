@@ -340,6 +340,148 @@ class LGNTrainer:
         """
         return [self.sample_trajectory() for _ in range(batch_size)]
 
+    def sample_batch_batched(self, batch_size: int) -> List[TBTrajectory]:
+        """
+        Sample a batch of trajectories using batched forward passes.
+
+        This method samples multiple trajectories in parallel by:
+        1. Initializing batch_size empty LGN states
+        2. At each step, using forward_policy_batched() for all active trajectories
+        3. Sampling actions independently for each trajectory
+        4. Tracking which trajectories have terminated
+        5. Continuing until all trajectories are complete
+
+        IMPORTANT: This produces IDENTICAL results to calling sample_trajectory()
+        batch_size times, given the same random state. The only difference is
+        computational efficiency (batched GNN forward passes).
+
+        Parameters:
+        -----------
+        batch_size : int
+            Number of trajectories to sample
+
+        Returns:
+        --------
+        List[TBTrajectory]
+            List of sampled trajectories (same as sample_batch())
+        """
+        if batch_size == 0:
+            return []
+
+        # Initialize batch_size LGN states
+        lgns = [LGNState(num_inputs=self.mdp.num_inputs, max_gates=self.mdp.max_gates)
+                for _ in range(batch_size)]
+
+        # Track trajectory data for each
+        all_states: List[List[LGNState]] = [[] for _ in range(batch_size)]
+        all_actions: List[List[Dict]] = [[] for _ in range(batch_size)]
+
+        # Track which trajectories are still active
+        active_mask = [True] * batch_size  # True = still sampling
+        termination_reasons: List[str] = [''] * batch_size
+        log_rewards: List[float] = [0.0] * batch_size
+
+        with torch.no_grad():
+            while any(active_mask):
+                # Get indices of active trajectories
+                active_indices = [i for i, active in enumerate(active_mask) if active]
+
+                if len(active_indices) == 0:
+                    break
+
+                # Collect active LGNs
+                active_lgns = [lgns[i] for i in active_indices]
+
+                # Store current states for active trajectories
+                for i in active_indices:
+                    all_states[i].append(lgns[i].copy())
+
+                # Get valid actions for each active LGN
+                valid_actions_per_lgn = [
+                    self.action_space.get_valid_actions(lgn) for lgn in active_lgns
+                ]
+
+                # Separate gate actions and check for stop
+                gate_actions_per_lgn = []
+                has_stop_per_lgn = []
+
+                for valid_actions in valid_actions_per_lgn:
+                    gate_actions = [a for a in valid_actions if 'gate_type' in a]
+                    has_stop = any('action' in a and a['action'] == 'stop' for a in valid_actions)
+                    gate_actions_per_lgn.append(gate_actions)
+                    has_stop_per_lgn.append(has_stop)
+
+                # Batched forward pass for all active LGNs
+                action_q_list, stop_q = self.policy.forward_policy_batched(
+                    active_lgns, gate_actions_per_lgn, self.device
+                )
+
+                # Sample action for each active trajectory
+                for batch_idx, orig_idx in enumerate(active_indices):
+                    gate_actions = gate_actions_per_lgn[batch_idx]
+                    has_stop = has_stop_per_lgn[batch_idx]
+                    action_q = action_q_list[batch_idx]
+                    stop_q_val = stop_q[batch_idx]
+
+                    # Combine Q-values (same logic as sample_trajectory)
+                    if len(gate_actions) > 0 and has_stop:
+                        all_q_values = torch.cat([action_q, stop_q_val.unsqueeze(0)])
+                        all_actions_list = gate_actions + [{'action': 'stop'}]
+                    elif len(gate_actions) > 0:
+                        all_q_values = action_q
+                        all_actions_list = gate_actions
+                    else:
+                        all_q_values = stop_q_val.unsqueeze(0)
+                        all_actions_list = [{'action': 'stop'}]
+
+                    # Boltzmann sampling with temperature (same as sample_trajectory)
+                    probs = torch.softmax(all_q_values / self.temperature, dim=0)
+                    cumsum = torch.cumsum(probs, dim=0)
+                    u = torch.rand(1, device=probs.device)
+                    action_idx = int(torch.searchsorted(cumsum, u).item())
+                    action_idx = min(action_idx, len(all_actions_list) - 1)
+
+                    sampled_action = all_actions_list[action_idx]
+                    all_actions[orig_idx].append(sampled_action)
+
+                    # Check if stop action
+                    is_stop = 'action' in sampled_action and sampled_action['action'] == 'stop'
+
+                    if is_stop:
+                        # Mark as inactive
+                        active_mask[orig_idx] = False
+
+                        # Determine termination reason
+                        lgn = lgns[orig_idx]
+                        if lgn.get_num_gates() >= lgn.max_gates:
+                            termination_reasons[orig_idx] = 'max_gates'
+                        else:
+                            termination_reasons[orig_idx] = 'stop_action'
+
+                        # Compute log reward
+                        reward = self.reward_fn(lgn)
+                        log_rewards[orig_idx] = np.log(reward + 1e-8)
+                    else:
+                        # Apply action
+                        lgns[orig_idx].add_gate(
+                            sampled_action['gate_type'],
+                            sampled_action['input_indices']
+                        )
+
+        # Build TBTrajectory objects
+        trajectories = []
+        for i in range(batch_size):
+            traj = TBTrajectory(
+                states=all_states[i],
+                actions=all_actions[i],
+                log_reward=log_rewards[i],
+                terminal_state=lgns[i].copy(),
+                termination_reason=termination_reasons[i]
+            )
+            trajectories.append(traj)
+
+        return trajectories
+
     def compute_tb_loss_batched(
         self,
         trajectories: List[TBTrajectory]
@@ -462,8 +604,8 @@ class LGNTrainer:
             - loss: Scalar loss value
             - metrics: Dictionary of training metrics
         """
-        # Sample batch of trajectories
-        trajectories = self.sample_batch(batch_size)
+        # Sample batch of trajectories using batched forward passes
+        trajectories = self.sample_batch_batched(batch_size)
 
         # Compute TB loss for all trajectories using batched forward passes
         scores, log_pfs, log_rewards = self.compute_tb_loss_batched(trajectories)
