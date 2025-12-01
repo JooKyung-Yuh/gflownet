@@ -313,41 +313,10 @@ class LGNTrainer:
 
         TB Loss Formula:
         ----------------
-        For each transition (parent -> action -> state):
-            inflow = log(sum_{parent, a} exp(Q(parent, a)))
-            outflow = log(R(s) + sum_{a'} exp(Q(s, a')))
-            loss = (inflow - outflow)^2
-
-        Balanced Loss:
-        --------------
-        If balanced_loss=True, separately weight terminal vs non-terminal states:
-            term_loss = mean((inflow - outflow)^2  for terminal states)
-            flow_loss = mean((inflow - outflow)^2  for non-terminal states)
-            loss = term_loss * leaf_coef + flow_loss
-
-        This gives terminal states more weight (default 10x), which is critical
-        for environments with sparse rewards (like LGN).
-
-        Parameters:
-        -----------
-        p_list : List[LGNState]
-            Parent states
-        pb : torch.Tensor
-            Parent batch indices (shape: [num_parents])
-        a_list : List[Dict[str, Any]]
-            Actions taken from parents
-        r : torch.Tensor
-            Rewards (shape: [num_transitions])
-        s_list : List[LGNState]
-            Resulting states (shape: [num_transitions])
-        d : torch.Tensor
-            Done flags (shape: [num_transitions])
+        L_TB = log(Z) + log(Q(F)) - log(R(x)) - log(P_B)
 
         Returns:
         --------
-        Tuple[torch.Tensor, Dict[str, float]]
-            - loss: Scalar loss tensor
-            - metrics: Dictionary with 'term_loss', 'flow_loss', etc.
         """
         ntransitions = len(s_list)
 
