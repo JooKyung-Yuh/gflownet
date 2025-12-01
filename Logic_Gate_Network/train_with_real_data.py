@@ -132,6 +132,10 @@ def main():
                         help='Temperature for Boltzmann sampling (higher=more exploration). Default: 1.0')
     parser.add_argument('--log-interval', type=int, default=100,
                         help='Print accuracy every N steps (0 to disable). Default: 100')
+    parser.add_argument('--profile', type=int, default=0,
+                        help='Enable PyTorch profiler for N iterations (0 to disable). Outputs to profile_trace.json')
+    parser.add_argument('--profile-detailed', action='store_true',
+                        help='Include stack traces in profiler output (slower but more detailed)')
 
     args = parser.parse_args()
 
@@ -315,17 +319,17 @@ def main():
     # C=3.0: Weight real errors more heavily to prevent "reject everything" strategy
     reward_fn = RewardFunction(C=3.0)
 
-    def compute_reward(lgn: LGNState) -> float:
+    def compute_log_reward(lgn: LGNState) -> float:
         """
-        Compute reward based on real/fake classification accuracy.
+        Compute log-reward based on real/fake classification accuracy.
 
-        Note: RewardFunction returns log-reward (which can be negative),
-        but GFlowNet requires non-negative rewards for TB loss computation.
-        We exponentiate to get R = exp(log_reward) which is always positive.
+        Returns log R(F) directly as defined in notion.md Eq. (2):
+            log R(F) = -C·∑(1-F(X⁽ⁱ⁾)) - log(∑F(X⁽⁻ʲ⁾) + ε) + Ω(F)
+
+        Note: Returns log-reward directly (can be negative).
+        This is used in TB Loss: Loss = (logZ + log P_F(τ) - log R(x))²
         """
-        log_reward = reward_fn.compute_reward(lgn, train_real, train_fake)
-        import numpy as np
-        return np.exp(log_reward)  # Convert log-reward to actual reward
+        return reward_fn.compute_reward(lgn, train_real, train_fake)
 
     def compute_reward_details(lgn: LGNState) -> dict:
         """Compute reward with detailed breakdown for wandb logging."""
@@ -342,7 +346,7 @@ def main():
         policy=policy,
         mdp=mdp,
         action_space=action_space,
-        reward_fn=compute_reward,
+        log_reward_fn=compute_log_reward,
         reward_fn_details=compute_reward_details,  # For wandb logging
         optimizer=None,  # Will be set below
         device=device,
@@ -362,85 +366,32 @@ def main():
     print(f"     Policy lr: {args.lr}, logZ lr: {args.lr_logz}")
 
     # Create evaluation function for accuracy tracking
-    def create_eval_fn(policy, mdp, action_space, test_real, test_fake, num_samples, device):
+    def create_eval_fn(trainer, test_real, test_fake, num_samples):
         """Create evaluation function closure for periodic accuracy evaluation."""
         from lgn import LGNEvaluator
         evaluator = LGNEvaluator()
 
         def eval_fn():
-            """Sample LGNs using batched forward and compute accuracy on test data."""
+            """Sample LGNs using trainer.sample_greedy_batch and compute accuracy on test data."""
             real_accs = []
             fake_accs = []
 
-            with torch.no_grad():
-                # Initialize num_samples LGNs
-                lgns = [LGNState(num_inputs=mdp.num_inputs, max_gates=mdp.max_gates)
-                        for _ in range(num_samples)]
-                active_mask = [True] * num_samples
+            # Use trainer's sample_greedy_batch method (avoids code duplication)
+            lgns = trainer.sample_greedy_batch(num_samples)
 
-                # Sample all LGNs in parallel using batched forward
-                while any(active_mask):
-                    active_indices = [i for i, active in enumerate(active_mask) if active]
-                    if len(active_indices) == 0:
-                        break
+            # Evaluate all sampled LGNs
+            for lgn in lgns:
+                # Use evaluate_final_batch (same as reward_fn) for consistency
+                real_outputs = evaluator.evaluate_final_batch(lgn, test_real)
+                fake_outputs = evaluator.evaluate_final_batch(lgn, test_fake)
 
-                    active_lgns = [lgns[i] for i in active_indices]
+                # real_acc: Real samples correctly accepted (output 1)
+                real_acc = real_outputs.count(1) / len(test_real)
+                real_accs.append(real_acc)
 
-                    # Get valid actions for each active LGN
-                    gate_actions_per_lgn = []
-                    has_stop_per_lgn = []
-                    for lgn in active_lgns:
-                        actions = action_space.get_valid_actions(lgn)
-                        gate_actions = [a for a in actions if 'gate_type' in a]
-                        has_stop = any('action' in a and a['action'] == 'stop' for a in actions)
-                        gate_actions_per_lgn.append(gate_actions)
-                        has_stop_per_lgn.append(has_stop)
-
-                    # Batched forward pass
-                    action_q_list, stop_q = policy.forward_policy_batched(
-                        active_lgns, gate_actions_per_lgn, device
-                    )
-
-                    # Greedy action selection for each LGN
-                    for batch_idx, orig_idx in enumerate(active_indices):
-                        gate_actions = gate_actions_per_lgn[batch_idx]
-                        has_stop = has_stop_per_lgn[batch_idx]
-                        action_q = action_q_list[batch_idx]
-                        stop_q_val = stop_q[batch_idx]
-
-                        # Combine Q-values
-                        if len(gate_actions) > 0 and has_stop:
-                            all_q = torch.cat([action_q, stop_q_val.unsqueeze(0)])
-                            all_actions = gate_actions + [{'action': 'stop'}]
-                        elif len(gate_actions) > 0:
-                            all_q = action_q
-                            all_actions = gate_actions
-                        else:
-                            all_q = stop_q_val.unsqueeze(0)
-                            all_actions = [{'action': 'stop'}]
-
-                        # Greedy: take argmax (move to CPU to avoid sync overhead)
-                        best_idx = all_q.cpu().argmax().item()
-                        best_action = all_actions[best_idx]
-
-                        if 'action' in best_action and best_action['action'] == 'stop':
-                            active_mask[orig_idx] = False
-                        else:
-                            lgns[orig_idx].add_gate(best_action['gate_type'], best_action['input_indices'])
-
-                # Evaluate all sampled LGNs
-                for lgn in lgns:
-                    # Use evaluate_final_batch (same as reward_fn) for consistency
-                    real_outputs = evaluator.evaluate_final_batch(lgn, test_real)
-                    fake_outputs = evaluator.evaluate_final_batch(lgn, test_fake)
-
-                    # real_acc: Real samples correctly accepted (output 1)
-                    real_acc = real_outputs.count(1) / len(test_real)
-                    real_accs.append(real_acc)
-
-                    # fake_acc: Fake samples correctly rejected (output 0)
-                    fake_acc = fake_outputs.count(0) / len(test_fake)
-                    fake_accs.append(fake_acc)
+                # fake_acc: Fake samples correctly rejected (output 0)
+                fake_acc = fake_outputs.count(0) / len(test_fake)
+                fake_accs.append(fake_acc)
 
             return {
                 'real_acc': np.mean(real_accs),
@@ -450,25 +401,84 @@ def main():
         return eval_fn
 
     eval_fn = create_eval_fn(
-        policy=policy,
-        mdp=mdp,
-        action_space=action_space,
+        trainer=trainer,
         test_real=test_real,
         test_fake=test_fake,
         num_samples=args.eval_samples,
-        device=device
     )
     print(f"  ✅ Evaluation function created (eval_every={args.eval_every}, samples={args.eval_samples})")
 
     # Step 5: Train!
     print(f"\n[5/5] Training...")
     print(f"  Running {args.iterations} iterations with batch_size={args.batch_size}")
+    if args.profile > 0:
+        print(f"  📊 PyTorch Profiler enabled for {args.profile} iterations")
     print()
 
     # Create visualization wrapper function
     def visualize_fn(lgn, title):
         """Wrapper for visualize_lgn to match trainer's expected signature."""
         return visualize_lgn(lgn, save_path=None, title=title, return_fig_only=True)
+
+    # Run training with optional profiling
+    if args.profile > 0:
+        # Use PyTorch profiler for detailed GPU/CPU timing
+        from torch.profiler import profile, record_function, ProfilerActivity
+
+        profile_dir = Path("experiments/profiles")
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        profile_path = profile_dir / f"profile_{run_name}"
+
+        activities = [ProfilerActivity.CPU]
+        if device.type == 'cuda':
+            activities.append(ProfilerActivity.CUDA)
+
+        print(f"  Profiling activities: {[a.name for a in activities]}")
+        print(f"  Profile will be saved to: {profile_path}_trace.json")
+
+        with profile(
+            activities=activities,
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=args.profile_detailed,
+            on_trace_ready=lambda p: p.export_chrome_trace(str(profile_path) + "_trace.json"),
+        ) as prof:
+            # Run limited iterations for profiling
+            for i in range(args.profile):
+                with record_function(f"train_step_{i}"):
+                    trainer.train_step(args.batch_size)
+                prof.step()
+
+        # Print profiler summary
+        print("\n" + "=" * 80)
+        print("📊 Profiler Summary (sorted by total CPU time)")
+        print("=" * 80)
+        print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=30))
+
+        if device.type == 'cuda':
+            print("\n" + "=" * 80)
+            print("📊 Profiler Summary (sorted by total CUDA time)")
+            print("=" * 80)
+            print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=30))
+
+        # Save detailed text report
+        report_path = profile_path.with_suffix('.txt')
+        with open(report_path, 'w') as f:
+            f.write("=" * 80 + "\n")
+            f.write("CPU Time Summary\n")
+            f.write("=" * 80 + "\n")
+            f.write(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
+            if device.type == 'cuda':
+                f.write("\n\n" + "=" * 80 + "\n")
+                f.write("CUDA Time Summary\n")
+                f.write("=" * 80 + "\n")
+                f.write(prof.key_averages().table(sort_by="cuda_time_total", row_limit=100))
+        print(f"\n✅ Detailed report saved to: {report_path}")
+        print(f"✅ Chrome trace saved to: {profile_path}_trace.json")
+        print("   (Open in chrome://tracing or https://ui.perfetto.dev/)")
+
+        # Continue with full training after profiling
+        print(f"\n  Continuing with full training ({args.iterations} iterations)...")
 
     metrics = trainer.train(
         num_iterations=args.iterations,
@@ -493,7 +503,6 @@ def main():
     print(f"  logZ: {metrics['logZ'][-1]:.4f}")
     print(f"  log P_F: {metrics['log_pf'][-1]:.4f}")
     print(f"  log R: {metrics['log_reward'][-1]:.4f}")
-    print(f"  Mean Reward: {metrics['mean_reward'][-1]:.4f}")
 
     # Loss trend
     print(f"\nLoss Trend:")
@@ -510,7 +519,6 @@ def main():
             "final/logZ": metrics['logZ'][-1],
             "final/log_pf": metrics['log_pf'][-1],
             "final/log_reward": metrics['log_reward'][-1],
-            "final/mean_reward": metrics['mean_reward'][-1],
             "final/loss_improvement": metrics['loss'][0] - metrics['loss'][-1],
         })
 
