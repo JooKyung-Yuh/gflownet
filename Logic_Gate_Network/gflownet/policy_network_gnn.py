@@ -259,7 +259,7 @@ class LGNGNNPolicy(nn.Module):
 
                 # Q-value = sum of node logits + gate type logit
                 node_q = node_logits[list(input_indices)].sum()
-                gate_type_idx = GATE_TYPE_TO_IDX[gate_type] - 1  # Subtract 1 because logits are 0-indexed
+                gate_type_idx = GATE_TYPE_TO_IDX[gate_type]  # Already 0-indexed (0-15)
                 gate_q = gate_type_logits[gate_type_idx]
 
                 q = node_q + gate_q
@@ -398,7 +398,7 @@ class LGNGNNPolicy(nn.Module):
 
                 # Q-value = sum of node logits + gate type logit
                 node_q = node_logits[list(input_indices)].sum()
-                gate_type_idx = GATE_TYPE_TO_IDX[gate_type] - 1
+                gate_type_idx = GATE_TYPE_TO_IDX[gate_type]  # Already 0-indexed (0-15)
                 gate_q = gate_type_logits[gate_type_idx]
 
                 q_values.append(node_q + gate_q)
@@ -536,8 +536,20 @@ class LGNGNNPolicy(nn.Module):
 
         # 2. Graph-level embeddings for gate_type and stop heads
         # Use scatter_mean to compute per-graph mean embeddings
-        # batch_data.batch: [total_nodes] with values 0, 0, ..., 1, 1, ..., 2, 2, ...
-        graph_emb = gnn.global_mean_pool(out, batch_data.batch)  # [batch_size, node_emb_dim]
+        # Note: MPS device doesn't support scatter operations, so we use vectorized mask approach
+        if out.device.type == 'mps':
+            # MPS-compatible vectorized mean pooling (no scatter operations)
+            total_nodes = out.size(0)
+            batch_idx = torch.arange(total_nodes, device=out.device)
+            ptr = batch_data.ptr.to(out.device)  # Ensure ptr is on same device
+            starts = ptr[:-1].unsqueeze(1)  # [batch_size, 1]
+            ends = ptr[1:].unsqueeze(1)  # [batch_size, 1]
+            mask = ((batch_idx >= starts) & (batch_idx < ends)).float()  # [batch_size, total_nodes]
+            counts = mask.sum(dim=1, keepdim=True)  # [batch_size, 1]
+            graph_emb = torch.mm(mask, out) / counts  # [batch_size, node_emb_dim]
+        else:
+            # CUDA/CPU: use efficient scatter-based pooling
+            graph_emb = gnn.global_mean_pool(out, batch_data.batch)  # [batch_size, node_emb_dim]
 
         # 3. Gate type logits (per-graph)
         gate_type_logits = self.gate_type_head(graph_emb)  # [batch_size, num_gate_types]
@@ -546,6 +558,239 @@ class LGNGNNPolicy(nn.Module):
         stop_logits = self.stop_head(graph_emb).squeeze(-1)  # [batch_size]
 
         return node_logits_list, gate_type_logits, stop_logits
+
+    def _compute_gate_q_values_vectorized(
+        self,
+        node_logits_list: List[torch.Tensor],
+        gate_type_logits: torch.Tensor,
+        gate_actions_per_lgn: List[List[Dict[str, Any]]],
+        device: torch.device
+    ) -> List[torch.Tensor]:
+        """
+        Vectorized computation of Q-values for gate actions only.
+
+        Instead of nested Python loops, this method:
+        1. Collects all input_indices into flat tensors
+        2. Uses segment-based scatter_add for batched sum
+        3. Indexes gate_type_logits in batch
+
+        This eliminates ~150,000 individual .sum() calls.
+        """
+        batch_size = len(node_logits_list)
+        action_q_list = []
+
+        # Count total actions and prepare flat indices
+        total_actions = sum(len(actions) for actions in gate_actions_per_lgn)
+
+        if total_actions == 0:
+            # No actions at all
+            for _ in range(batch_size):
+                action_q_list.append(torch.empty(0, device=device))
+            return action_q_list
+
+        # Flatten all input indices and track which action they belong to
+        all_node_indices = []  # Flat list of node indices
+        action_ids = []        # Which action each node index belongs to
+        gate_type_indices = [] # Gate type index for each action
+        lgn_indices = []       # Which LGN each action belongs to
+        num_actions_per_lgn = []  # Number of actions per LGN
+
+        action_id = 0
+        for lgn_idx, (node_logits, gate_actions) in enumerate(zip(node_logits_list, gate_actions_per_lgn)):
+            num_actions = len(gate_actions)
+            num_actions_per_lgn.append(num_actions)
+
+            for action in gate_actions:
+                gate_type = action['gate_type']
+                input_indices = action['input_indices']
+
+                # Add all input indices for this action
+                for node_idx in input_indices:
+                    all_node_indices.append(node_idx)
+                    action_ids.append(action_id)
+
+                gate_type_indices.append(GATE_TYPE_TO_IDX[gate_type])
+                lgn_indices.append(lgn_idx)
+                action_id += 1
+
+        # Convert to tensors
+        if len(all_node_indices) == 0:
+            # All actions have no inputs (shouldn't happen normally)
+            for num_actions in num_actions_per_lgn:
+                if num_actions > 0:
+                    action_q_list.append(torch.zeros(num_actions, device=device))
+                else:
+                    action_q_list.append(torch.empty(0, device=device))
+            return action_q_list
+
+        action_ids_t = torch.tensor(action_ids, dtype=torch.long, device=device)
+        gate_type_indices_t = torch.tensor(gate_type_indices, dtype=torch.long, device=device)
+        lgn_indices_t = torch.tensor(lgn_indices, dtype=torch.long, device=device)
+
+        # Concatenate all node_logits into single tensor with offset tracking
+        all_node_logits = torch.cat(node_logits_list)  # [total_nodes]
+
+        # Compute node offsets for each LGN
+        node_offsets = [0]
+        for node_logits in node_logits_list[:-1]:
+            node_offsets.append(node_offsets[-1] + len(node_logits))
+
+        # Build global indices directly (node index + LGN offset)
+        global_node_indices = []
+        for lgn_idx, gate_actions in enumerate(gate_actions_per_lgn):
+            offset = node_offsets[lgn_idx]
+            for action in gate_actions:
+                for node_idx in action['input_indices']:
+                    global_node_indices.append(offset + node_idx)
+
+        global_node_indices_t = torch.tensor(global_node_indices, dtype=torch.long, device=device)
+
+        # Gather node logits for all indices
+        gathered_node_logits = all_node_logits[global_node_indices_t]  # [total_input_nodes]
+
+        # Sum node logits per action using scatter_add
+        node_q_per_action = torch.zeros(total_actions, device=device)
+        node_q_per_action.scatter_add_(0, action_ids_t, gathered_node_logits)
+
+        # Get gate type logits for each action (vectorized indexing)
+        gate_q_per_action = gate_type_logits[lgn_indices_t, gate_type_indices_t]
+
+        # Total Q-value per action
+        q_values_flat = node_q_per_action + gate_q_per_action
+
+        # Split back into per-LGN lists
+        start = 0
+        for num_actions in num_actions_per_lgn:
+            if num_actions > 0:
+                action_q_list.append(q_values_flat[start:start + num_actions])
+            else:
+                action_q_list.append(torch.empty(0, device=device))
+            start += num_actions
+
+        return action_q_list
+
+    def _compute_all_q_values_vectorized(
+        self,
+        node_logits_list: List[torch.Tensor],
+        gate_type_logits: torch.Tensor,
+        stop_logits: torch.Tensor,
+        actions_per_lgn: List[List[Dict[str, Any]]],
+        device: torch.device
+    ) -> List[torch.Tensor]:
+        """
+        Fully vectorized computation of Q-values for all actions (including stop).
+
+        This method avoids Python loop tensor indexing (SelectBackward0) by:
+        1. Computing all Q-values in flat tensors
+        2. Using scatter operations to place values at correct positions
+        3. Splitting the flat result tensor at the end
+        """
+        batch_size = len(node_logits_list)
+
+        # Separate gate actions and track stop action positions
+        gate_actions_per_lgn = []
+        stop_positions = []  # (lgn_idx, position_in_actions)
+        num_actions_per_lgn = []
+
+        for lgn_idx, actions in enumerate(actions_per_lgn):
+            gate_actions = []
+            for action_idx, action in enumerate(actions):
+                if 'action' in action and action['action'] == 'stop':
+                    stop_positions.append((lgn_idx, action_idx))
+                else:
+                    gate_actions.append((action_idx, action))
+            gate_actions_per_lgn.append(gate_actions)
+            num_actions_per_lgn.append(len(actions))
+
+        # Compute offsets for flat indexing
+        total_actions = sum(num_actions_per_lgn)
+        action_offsets = [0]
+        for n in num_actions_per_lgn[:-1]:
+            action_offsets.append(action_offsets[-1] + n)
+
+        # Count total gate actions
+        total_gate_actions = sum(len(actions) for actions in gate_actions_per_lgn)
+
+        if total_actions == 0:
+            # No actions at all
+            return [torch.empty(0, device=device) for _ in range(batch_size)]
+
+        # Build flat structures for gate actions
+        all_node_indices = []
+        action_ids = []
+        gate_type_indices = []
+        lgn_indices_for_gate = []
+        flat_positions_for_gate = []  # Global flat position for each gate action
+
+        # Node offsets for global indexing
+        node_offsets = [0]
+        for node_logits in node_logits_list[:-1]:
+            node_offsets.append(node_offsets[-1] + len(node_logits))
+
+        action_id = 0
+        for lgn_idx, gate_actions in enumerate(gate_actions_per_lgn):
+            offset = node_offsets[lgn_idx]
+            action_offset = action_offsets[lgn_idx]
+            for orig_pos, action in gate_actions:
+                gate_type = action['gate_type']
+                input_indices = action['input_indices']
+
+                for node_idx in input_indices:
+                    all_node_indices.append(offset + node_idx)
+                    action_ids.append(action_id)
+
+                gate_type_indices.append(GATE_TYPE_TO_IDX[gate_type])
+                lgn_indices_for_gate.append(lgn_idx)
+                flat_positions_for_gate.append(action_offset + orig_pos)
+                action_id += 1
+
+        # Allocate flat result tensor
+        q_values_flat = torch.zeros(total_actions, device=device)
+
+        # Compute and place gate Q-values
+        if total_gate_actions > 0 and len(all_node_indices) > 0:
+            all_node_indices_t = torch.tensor(all_node_indices, dtype=torch.long, device=device)
+            action_ids_t = torch.tensor(action_ids, dtype=torch.long, device=device)
+            gate_type_indices_t = torch.tensor(gate_type_indices, dtype=torch.long, device=device)
+            lgn_indices_t = torch.tensor(lgn_indices_for_gate, dtype=torch.long, device=device)
+            flat_positions_t = torch.tensor(flat_positions_for_gate, dtype=torch.long, device=device)
+
+            all_node_logits = torch.cat(node_logits_list)
+            gathered_node_logits = all_node_logits[all_node_indices_t]
+
+            node_q_per_action = torch.zeros(total_gate_actions, device=device)
+            node_q_per_action.scatter_add_(0, action_ids_t, gathered_node_logits)
+
+            gate_q_per_action = gate_type_logits[lgn_indices_t, gate_type_indices_t]
+            gate_q_values = node_q_per_action + gate_q_per_action
+
+            # Place gate Q-values at correct flat positions (single vectorized scatter)
+            q_values_flat.scatter_(0, flat_positions_t, gate_q_values)
+
+        # Compute and place stop Q-values
+        if len(stop_positions) > 0:
+            stop_lgn_indices = torch.tensor([p[0] for p in stop_positions], dtype=torch.long, device=device)
+            stop_flat_positions = torch.tensor(
+                [action_offsets[lgn_idx] + pos for lgn_idx, pos in stop_positions],
+                dtype=torch.long, device=device
+            )
+            stop_q_values = stop_logits[stop_lgn_indices]
+
+            # Place stop Q-values at correct flat positions (single vectorized scatter)
+            q_values_flat.scatter_(0, stop_flat_positions, stop_q_values)
+
+        # Split flat tensor into per-LGN lists
+        q_values_list = []
+        for lgn_idx in range(batch_size):
+            num_actions = num_actions_per_lgn[lgn_idx]
+            if num_actions == 0:
+                q_values_list.append(torch.empty(0, device=device))
+            else:
+                start = action_offsets[lgn_idx]
+                end = start + num_actions
+                q_values_list.append(q_values_flat[start:end])
+
+        return q_values_list
 
     def forward_policy_batched(
         self,
@@ -591,28 +836,10 @@ class LGNGNNPolicy(nn.Module):
             batch_data, num_nodes_per_graph, has_edges_per_graph
         )
 
-        # Compute Q-values for each LGN's gate actions
-        action_q_list = []
-
-        for i, (node_logits, gate_actions) in enumerate(zip(node_logits_list, gate_actions_per_lgn)):
-            if len(gate_actions) > 0:
-                q_values = []
-                for action in gate_actions:
-                    gate_type = action['gate_type']
-                    input_indices = action['input_indices']
-
-                    # Q-value = sum of node logits + gate type logit
-                    node_q = node_logits[list(input_indices)].sum()
-                    gate_type_idx = GATE_TYPE_TO_IDX[gate_type] - 1
-                    gate_q = gate_type_logits[i, gate_type_idx]
-
-                    q_values.append(node_q + gate_q)
-
-                action_q = torch.stack(q_values)
-            else:
-                action_q = torch.empty(0, device=device)
-
-            action_q_list.append(action_q)
+        # Vectorized Q-value computation for all LGNs' gate actions
+        action_q_list = self._compute_gate_q_values_vectorized(
+            node_logits_list, gate_type_logits, gate_actions_per_lgn, device
+        )
 
         return action_q_list, stop_logits
 
@@ -659,34 +886,10 @@ class LGNGNNPolicy(nn.Module):
             batch_data, num_nodes_per_graph, has_edges_per_graph
         )
 
-        # Compute Q-values for each LGN
-        q_values_list = []
-
-        for i, (node_logits, actions) in enumerate(zip(node_logits_list, actions_per_lgn)):
-            q_values = []
-
-            for action in actions:
-                if 'action' in action and action['action'] == 'stop':
-                    # Stop action
-                    q = stop_logits[i]
-                else:
-                    # Gate addition action
-                    gate_type = action['gate_type']
-                    input_indices = action['input_indices']
-
-                    # Q-value = sum of node logits + gate type logit
-                    node_q = node_logits[list(input_indices)].sum()
-                    gate_type_idx = GATE_TYPE_TO_IDX[gate_type] - 1
-                    gate_q = gate_type_logits[i, gate_type_idx]
-
-                    q = node_q + gate_q
-
-                q_values.append(q)
-
-            if len(q_values) > 0:
-                q_values_list.append(torch.stack(q_values))
-            else:
-                q_values_list.append(torch.empty(0, device=device))
+        # Vectorized Q-value computation for all actions (including stop)
+        q_values_list = self._compute_all_q_values_vectorized(
+            node_logits_list, gate_type_logits, stop_logits, actions_per_lgn, device
+        )
 
         return q_values_list
 
@@ -731,3 +934,83 @@ class LGNGNNPolicy(nn.Module):
             log_probs_list.append(log_probs)
 
         return log_probs_list
+
+    def compute_selected_logprobs_batched(
+        self,
+        lgns: List[LGNState],
+        actions_per_lgn: List[List[Dict[str, Any]]],
+        selected_action_indices: List[int],
+        device: Optional[torch.device] = None
+    ) -> torch.Tensor:
+        """
+        Compute log P(a|s) for selected actions only, fully vectorized.
+
+        This method avoids Python loop tensor indexing (SelectBackward0) by:
+        1. Computing all Q-values in a single batched forward pass
+        2. Flattening all log_probs with offset tracking
+        3. Using a single tensor indexing operation to select all at once
+
+        This is optimized for training where we know which action was taken
+        at each state and only need the log_prob for that specific action.
+
+        Parameters:
+        -----------
+        lgns : List[LGNState]
+            List of LGN states to process
+        actions_per_lgn : List[List[Dict[str, Any]]]
+            For each LGN, list of all valid actions
+        selected_action_indices : List[int]
+            Index of the selected action for each LGN
+            selected_action_indices[i] is the index into actions_per_lgn[i]
+        device : torch.device
+            Device to run on
+
+        Returns:
+        --------
+        torch.Tensor
+            Log probabilities for selected actions only, shape [num_lgns]
+            result[i] = log P(selected_action | lgn_i)
+        """
+        if device is None:
+            device = next(self.parameters()).device
+
+        num_lgns = len(lgns)
+        if num_lgns == 0:
+            return torch.empty(0, device=device)
+
+        # Step 1: Compute all Q-values in batched forward pass
+        q_values_list = self.compute_q_values_batched(lgns, actions_per_lgn, device)
+
+        # Step 2: Compute log_softmax for each and flatten with offset tracking
+        # Build offsets for flat indexing
+        offsets = []
+        current_offset = 0
+        flat_log_probs_parts = []
+
+        for i, q_values in enumerate(q_values_list):
+            offsets.append(current_offset)
+            if q_values.numel() > 0:
+                log_probs = F.log_softmax(q_values, dim=0)
+                flat_log_probs_parts.append(log_probs)
+                current_offset += q_values.numel()
+            # Empty q_values case: offset stays same, nothing appended
+
+        if len(flat_log_probs_parts) == 0:
+            # All states had empty actions (shouldn't happen in practice)
+            return torch.zeros(num_lgns, device=device)
+
+        # Concatenate all log_probs into single flat tensor
+        flat_log_probs = torch.cat(flat_log_probs_parts)  # [total_actions]
+
+        # Step 3: Compute global indices for selected actions
+        # global_index[i] = offsets[i] + selected_action_indices[i]
+        global_indices = torch.tensor(
+            [offsets[i] + selected_action_indices[i] for i in range(num_lgns)],
+            dtype=torch.long,
+            device=device
+        )
+
+        # Step 4: Single vectorized indexing (no Python loop on tensors)
+        selected_log_probs = flat_log_probs[global_indices]  # [num_lgns]
+
+        return selected_log_probs
