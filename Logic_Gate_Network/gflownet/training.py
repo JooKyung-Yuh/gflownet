@@ -34,7 +34,7 @@ from lgn.network import LGNState
 from .policy_network import LGNPolicyNetwork
 from .policy_network_gnn import LGNGNNPolicy
 from .lgn_mdp import LGNMDP
-from .action_space import LGNActionSpace
+from .action_space import LGNActionSpace, LGNActionSpace as ActionSpaceHelper
 
 # Optional wandb import
 try:
@@ -88,6 +88,7 @@ class TBTrajectory:
     log_reward: float           # log R(terminal_state)
     terminal_state: LGNState    # Final state for reward computation
     termination_reason: str     # 'max_gates' or 'all_features' or 'stop_action'
+    valid_actions_per_state: List[List[Dict]] | None = None  # Valid actions cached from sampling
 
 
 class LGNTrainer:
@@ -111,8 +112,8 @@ class LGNTrainer:
         MDP wrapper (used for num_inputs and max_gates)
     action_space : LGNActionSpace
         Action space providing get_valid_actions()
-    reward_fn : Callable[[LGNState], float]
-        Reward function R(s) for terminal states (returns actual reward, not log)
+    log_reward_fn : Callable[[LGNState], float]
+        Log-reward function log R(s) for terminal states (returns log-reward directly)
     optimizer : torch.optim.Optimizer
         Optimizer for training (should include trainer.logZ parameter)
     device : torch.device
@@ -139,7 +140,7 @@ class LGNTrainer:
         policy: Union[LGNPolicyNetwork, LGNGNNPolicy],
         mdp: LGNMDP,
         action_space: LGNActionSpace,
-        reward_fn: Callable[[LGNState], float],
+        log_reward_fn: Callable[[LGNState], float],
         optimizer: torch.optim.Optimizer,
         device: torch.device,
         init_logZ: float = 0.0,
@@ -150,7 +151,7 @@ class LGNTrainer:
         self.policy = policy
         self.mdp = mdp
         self.action_space = action_space
-        self.reward_fn = reward_fn
+        self.log_reward_fn = log_reward_fn
         self.reward_fn_details = reward_fn_details  # Optional: returns detailed reward breakdown
         self.optimizer = optimizer
         self.device = device
@@ -201,9 +202,8 @@ class LGNTrainer:
                 # Get valid actions from current state
                 valid_actions = self.action_space.get_valid_actions(lgn)
 
-                # Separate gate actions and stop action
-                gate_actions = [a for a in valid_actions if 'gate_type' in a]
-                has_stop = any('action' in a and a['action'] == 'stop' for a in valid_actions)
+                # Separate gate actions and stop action (using helper function)
+                gate_actions, has_stop = LGNActionSpace.separate_gate_and_stop_actions(valid_actions)
 
                 # Compute Q-values
                 action_q, stop_q = self.policy.forward_policy(lgn, gate_actions)
@@ -245,9 +245,8 @@ class LGNTrainer:
                         termination_reason = 'stop_action'
 
                     # Compute log reward at terminal state
-                    reward = self.reward_fn(lgn)
-                    # reward_fn returns actual reward, convert to log
-                    log_reward = np.log(reward + 1e-8)
+                    # reward_fn returns log_reward directly (no exp/log conversion needed)
+                    log_reward = self.log_reward_fn(lgn)
                     break
                 else:
                     # Apply action
@@ -376,6 +375,7 @@ class LGNTrainer:
         # Track trajectory data for each
         all_states: List[List[LGNState]] = [[] for _ in range(batch_size)]
         all_actions: List[List[Dict]] = [[] for _ in range(batch_size)]
+        all_valid_actions: List[List[List[Dict]]] = [[] for _ in range(batch_size)]  # Cache valid actions
 
         # Track which trajectories are still active
         active_mask = [True] * batch_size  # True = still sampling
@@ -402,13 +402,16 @@ class LGNTrainer:
                     self.action_space.get_valid_actions(lgn) for lgn in active_lgns
                 ]
 
-                # Separate gate actions and check for stop
+                # Cache valid actions for each trajectory (for reuse in loss computation)
+                for batch_idx, orig_idx in enumerate(active_indices):
+                    all_valid_actions[orig_idx].append(valid_actions_per_lgn[batch_idx])
+
+                # Separate gate actions and check for stop (using helper function)
                 gate_actions_per_lgn = []
                 has_stop_per_lgn = []
 
                 for valid_actions in valid_actions_per_lgn:
-                    gate_actions = [a for a in valid_actions if 'gate_type' in a]
-                    has_stop = any('action' in a and a['action'] == 'stop' for a in valid_actions)
+                    gate_actions, has_stop = LGNActionSpace.separate_gate_and_stop_actions(valid_actions)
                     gate_actions_per_lgn.append(gate_actions)
                     has_stop_per_lgn.append(has_stop)
 
@@ -460,9 +463,8 @@ class LGNTrainer:
                         else:
                             termination_reasons[orig_idx] = 'stop_action'
 
-                        # Compute log reward
-                        reward = self.reward_fn(lgn)
-                        log_rewards[orig_idx] = np.log(reward + 1e-8)
+                        # Compute log reward (reward_fn returns log_reward directly)
+                        log_rewards[orig_idx] = self.log_reward_fn(lgn)
                     else:
                         # Apply action
                         lgns[orig_idx].add_gate(
@@ -478,21 +480,115 @@ class LGNTrainer:
                 actions=all_actions[i],
                 log_reward=log_rewards[i],
                 terminal_state=lgns[i].copy(),
-                termination_reason=termination_reasons[i]
+                termination_reason=termination_reasons[i],
+                valid_actions_per_state=all_valid_actions[i]  # Include cached valid actions
             )
             trajectories.append(traj)
 
         return trajectories
+
+    def sample_greedy_batch(self, batch_size: int) -> List[LGNState]:
+        """
+        Sample a batch of LGNs using greedy action selection (argmax Q-values).
+
+        This method is useful for evaluation where we want deterministic behavior.
+        It uses batched forward passes for efficiency (same as sample_batch_batched).
+
+        Parameters:
+        -----------
+        batch_size : int
+            Number of LGNs to sample
+
+        Returns:
+        --------
+        List[LGNState]
+            List of sampled terminal LGN states
+        """
+        if batch_size == 0:
+            return []
+
+        # Initialize batch_size LGN states
+        lgns = [LGNState(num_inputs=self.mdp.num_inputs, max_gates=self.mdp.max_gates)
+                for _ in range(batch_size)]
+
+        # Track which LGNs are still active
+        active_mask = [True] * batch_size
+
+        with torch.no_grad():
+            while any(active_mask):
+                # Get indices of active LGNs
+                active_indices = [i for i, active in enumerate(active_mask) if active]
+
+                if len(active_indices) == 0:
+                    break
+
+                # Collect active LGNs
+                active_lgns = [lgns[i] for i in active_indices]
+
+                # Get valid actions for each active LGN
+                valid_actions_per_lgn = [
+                    self.action_space.get_valid_actions(lgn) for lgn in active_lgns
+                ]
+
+                # Separate gate actions and check for stop (using helper function)
+                gate_actions_per_lgn = []
+                has_stop_per_lgn = []
+
+                for valid_actions in valid_actions_per_lgn:
+                    gate_actions, has_stop = LGNActionSpace.separate_gate_and_stop_actions(valid_actions)
+                    gate_actions_per_lgn.append(gate_actions)
+                    has_stop_per_lgn.append(has_stop)
+
+                # Batched forward pass for all active LGNs
+                action_q_list, stop_q = self.policy.forward_policy_batched(
+                    active_lgns, gate_actions_per_lgn, self.device
+                )
+
+                # Greedy action selection for each LGN
+                for batch_idx, orig_idx in enumerate(active_indices):
+                    gate_actions = gate_actions_per_lgn[batch_idx]
+                    has_stop = has_stop_per_lgn[batch_idx]
+                    action_q = action_q_list[batch_idx]
+                    stop_q_val = stop_q[batch_idx]
+
+                    # Combine Q-values (same logic as sample_batch_batched)
+                    if len(gate_actions) > 0 and has_stop:
+                        all_q_values = torch.cat([action_q, stop_q_val.unsqueeze(0)])
+                        all_actions_list = gate_actions + [{'action': 'stop'}]
+                    elif len(gate_actions) > 0:
+                        all_q_values = action_q
+                        all_actions_list = gate_actions
+                    else:
+                        all_q_values = stop_q_val.unsqueeze(0)
+                        all_actions_list = [{'action': 'stop'}]
+
+                    # Greedy: take argmax (move to CPU to avoid sync overhead)
+                    best_idx = all_q_values.cpu().argmax().item()
+                    best_action = all_actions_list[best_idx]
+
+                    # Check if stop action
+                    is_stop = 'action' in best_action and best_action['action'] == 'stop'
+
+                    if is_stop:
+                        active_mask[orig_idx] = False
+                    else:
+                        lgns[orig_idx].add_gate(
+                            best_action['gate_type'],
+                            best_action['input_indices']
+                        )
+
+        return lgns
 
     def compute_tb_loss_batched(
         self,
         trajectories: List[TBTrajectory]
     ) -> Tuple[List[torch.Tensor], List[float], List[float]]:
         """
-        Compute TB Loss for multiple trajectories using batched forward passes.
+        Compute TB Loss for multiple trajectories using a SINGLE batched forward pass.
 
-        This optimized version groups states by step index and processes them
-        in batches, significantly reducing the number of forward passes.
+        This optimized version collects ALL states from ALL trajectories and
+        processes them in ONE forward pass, then distributes results back to
+        each trajectory.
 
         TB Loss Formula (per trajectory):
             score = log P_F(τ) - log R(x)
@@ -516,67 +612,82 @@ class LGNTrainer:
         num_trajectories = len(trajectories)
 
         # ===================================================================
-        # Step 1: Organize trajectory data by step index
+        # Step 1: Collect ALL states, actions, and valid_actions from ALL trajectories
+        # Use cached valid_actions from sampling if available (avoids duplicate computation)
         # ===================================================================
-        # Group states and actions by step index for batched processing
-        # max_steps = maximum trajectory length
-        max_steps = max(len(traj.states) for traj in trajectories)
-
-        # For each step, collect (trajectory_idx, state, action, valid_actions)
-        steps_data: List[List[Tuple[int, LGNState, Dict, List[Dict]]]] = [
-            [] for _ in range(max_steps)
-        ]
+        all_states = []
+        all_actions = []
+        all_valid_actions = []
+        state_to_traj_idx = []  # Track which trajectory each state belongs to
 
         for traj_idx, traj in enumerate(trajectories):
+            # Check if valid_actions are cached (from sample_batch_batched)
+            has_cached = (traj.valid_actions_per_state is not None and
+                          len(traj.valid_actions_per_state) == len(traj.states))
+
             for step_idx, (state, action) in enumerate(zip(traj.states, traj.actions)):
-                valid_actions = self.action_space.get_valid_actions(state)
-                steps_data[step_idx].append((traj_idx, state, action, valid_actions))
+                all_states.append(state)
+                all_actions.append(action)
+                # Use cached valid_actions if available, otherwise compute
+                if has_cached:
+                    all_valid_actions.append(traj.valid_actions_per_state[step_idx])
+                else:
+                    all_valid_actions.append(self.action_space.get_valid_actions(state))
+                state_to_traj_idx.append(traj_idx)
 
-        # ===================================================================
-        # Step 2: Process each step with batched forward pass
-        # ===================================================================
-        # Accumulate log P_F for each trajectory
-        log_pf_accumulators = [torch.tensor(0.0, device=self.device) for _ in range(num_trajectories)]
+        total_states = len(all_states)
 
-        for step_idx, step_entries in enumerate(steps_data):
-            if len(step_entries) == 0:
-                continue
-
-            # Extract data for this step's batch
-            traj_indices = [entry[0] for entry in step_entries]
-            states = [entry[1] for entry in step_entries]
-            actions = [entry[2] for entry in step_entries]
-            valid_actions_per_state = [entry[3] for entry in step_entries]
-
-            # Batched forward pass for all states at this step
-            log_probs_list = self.policy.compute_action_logprobs_batched(
-                states, valid_actions_per_state, self.device
+        if total_states == 0:
+            # Edge case: all trajectories are empty
+            return (
+                [torch.tensor(0.0, device=self.device) for _ in range(num_trajectories)],
+                [0.0] * num_trajectories,
+                [traj.log_reward for traj in trajectories]
             )
 
-            # For each state, find the log prob of the taken action
-            for batch_idx, (traj_idx, action, valid_actions, log_probs) in enumerate(
-                zip(traj_indices, actions, valid_actions_per_state, log_probs_list)
-            ):
-                action_idx = self._find_action_index(valid_actions, action)
-                log_pf_accumulators[traj_idx] = log_pf_accumulators[traj_idx] + log_probs[action_idx]
+        # ===================================================================
+        # Step 2: Pre-compute action indices (CPU, no gradient)
+        # This avoids repeated _find_action_index calls in the loop
+        # ===================================================================
+        action_indices = []
+        for state_idx in range(total_states):
+            action = all_actions[state_idx]
+            valid_actions = all_valid_actions[state_idx]
+            action_idx = self._find_action_index(valid_actions, action)
+            action_indices.append(action_idx)
 
         # ===================================================================
-        # Step 3: Compute scores for each trajectory
+        # Step 3: SINGLE batched forward pass + vectorized selection
+        # Uses compute_selected_logprobs_batched to avoid Python loop
+        # tensor indexing (SelectBackward0)
         # ===================================================================
-        scores = []
-        log_pfs = []
-        log_rewards = []
+        selected_log_probs_tensor = self.policy.compute_selected_logprobs_batched(
+            all_states, all_valid_actions, action_indices, self.device
+        )  # [total_states]
 
-        for traj_idx, traj in enumerate(trajectories):
-            total_log_pf = log_pf_accumulators[traj_idx]
-            log_reward = torch.tensor(traj.log_reward, device=self.device)
+        # ===================================================================
+        # Step 4: Vectorized log P_F accumulation using scatter_add
+        # ===================================================================
+        traj_indices_tensor = torch.tensor(state_to_traj_idx, device=self.device, dtype=torch.long)
 
-            # score = log P_F - log R
-            score = total_log_pf - log_reward
+        # Accumulate log P_F per trajectory using scatter_add (vectorized)
+        log_pf_per_traj = torch.zeros(num_trajectories, device=self.device)
+        log_pf_per_traj.scatter_add_(0, traj_indices_tensor, selected_log_probs_tensor)
 
-            scores.append(score)
-            log_pfs.append(total_log_pf.item())
-            log_rewards.append(traj.log_reward)
+        # ===================================================================
+        # Step 5: Compute scores for each trajectory (vectorized)
+        # ===================================================================
+        # Collect log_rewards as tensor
+        log_rewards_list = [traj.log_reward for traj in trajectories]
+        log_rewards_tensor = torch.tensor(log_rewards_list, dtype=torch.float32, device=self.device)
+
+        # Vectorized score computation: score = log P_F - log R
+        scores_tensor = log_pf_per_traj - log_rewards_tensor  # [num_trajectories]
+
+        # Convert to list format for backward compatibility
+        scores = [scores_tensor[i] for i in range(num_trajectories)]
+        log_pfs = log_pf_per_traj.tolist()
+        log_rewards = log_rewards_list
 
         return scores, log_pfs, log_rewards
 
