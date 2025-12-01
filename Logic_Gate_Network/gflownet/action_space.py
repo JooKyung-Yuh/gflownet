@@ -321,3 +321,32 @@ class LGNActionSpace:
 
     # Return all valid actions (gate additions + optional stop)
     return actions
+
+  @staticmethod
+  def separate_gate_and_stop_actions(valid_actions: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    """
+    Separate valid actions into gate actions and stop action.
+
+    This is a utility function to avoid duplicating the action separation logic
+    across multiple places (sample_trajectory, sample_batch_batched, sample_greedy_batch, etc.).
+
+    Parameters:
+    -----------
+    valid_actions : list[dict[str, Any]]
+        List of valid actions from get_valid_actions()
+
+    Returns:
+    --------
+    tuple[list[dict[str, Any]], bool]
+        - gate_actions: List of gate addition actions (with 'gate_type' key)
+        - has_stop: True if stop action is available
+
+    Example:
+    --------
+    >>> actions = action_space.get_valid_actions(lgn)
+    >>> gate_actions, has_stop = LGNActionSpace.separate_gate_and_stop_actions(actions)
+    >>> print(f"Found {len(gate_actions)} gate actions, stop available: {has_stop}")
+    """
+    gate_actions = [a for a in valid_actions if 'gate_type' in a]
+    has_stop = any('action' in a and a['action'] == 'stop' for a in valid_actions)
+    return gate_actions, has_stop
