@@ -78,6 +78,10 @@ class TrainStepMetrics(TypedDict):
     reward_details: Dict[str, float] | None
     # Best trajectory LGN for visualization
     best_traj_lgn: LGNState
+    # Training accuracy (computed from reward_details, no extra computation)
+    train_real_acc: float | None  # TP / (TP + FN) = correct real / total real
+    train_fake_acc: float | None  # TN / (TN + FP) = correct fake / total fake
+    train_accuracy: float | None  # (TP + TN) / (TP + TN + FP + FN)
 
 
 @dataclass
@@ -145,14 +149,16 @@ class LGNTrainer:
         device: torch.device,
         init_logZ: float = 0.0,
         clip_grad: float = 10.0,
-        reward_fn_details: Callable[[LGNState], Dict] | None = None,
+        reward_fn_details: Callable[[LGNState], Dict] | None = None,  # Alias for backward compat
+        log_reward_fn_details: Callable[[LGNState], Dict] | None = None,
         temperature: float = 1.0,
     ):
         self.policy = policy
         self.mdp = mdp
         self.action_space = action_space
         self.log_reward_fn = log_reward_fn
-        self.reward_fn_details = reward_fn_details  # Optional: returns detailed reward breakdown
+        # Use log_reward_fn_details if provided, otherwise fall back to reward_fn_details
+        self.log_reward_fn_details = log_reward_fn_details or reward_fn_details
         self.optimizer = optimizer
         self.device = device
         self.clip_grad = clip_grad
@@ -777,11 +783,31 @@ class LGNTrainer:
 
         # Collect reward details if reward_fn_details is provided
         reward_details = None
-        if self.reward_fn_details is not None:
-            details_list = [self.reward_fn_details(traj.terminal_state) for traj in trajectories]
+        train_real_acc = None
+        train_fake_acc = None
+        train_accuracy = None
+        if self.log_reward_fn_details is not None:
+            details_list = [self.log_reward_fn_details(traj.terminal_state) for traj in trajectories]
+            # Extract counts for accuracy computation (no extra LGN evaluation needed)
+            num_real = details_list[0]['num_real']
+            num_fake = details_list[0]['num_fake']
+
+            # Compute mean training accuracy from existing reward computation
+            # real_error_count = FN (real samples incorrectly rejected)
+            # fake_acceptance_count = FP (fake samples incorrectly accepted)
+            mean_real_error = float(np.mean([d['real_error_count'] for d in details_list]))
+            mean_fake_accept = float(np.mean([d['fake_acceptance_count'] for d in details_list]))
+
+            # TP = real correctly accepted, TN = fake correctly rejected
+            # train_real_acc = TP / (TP + FN) = (num_real - real_error) / num_real
+            # train_fake_acc = TN / (TN + FP) = (num_fake - fake_accept) / num_fake
+            train_real_acc = (num_real - mean_real_error) / num_real if num_real > 0 else 0.0
+            train_fake_acc = (num_fake - mean_fake_accept) / num_fake if num_fake > 0 else 0.0
+            train_accuracy = (train_real_acc + train_fake_acc) / 2.0
+
             reward_details = {
-                'mean_real_error_count': float(np.mean([d['real_error_count'] for d in details_list])),
-                'mean_fake_acceptance_count': float(np.mean([d['fake_acceptance_count'] for d in details_list])),
+                'mean_real_error_count': mean_real_error,
+                'mean_fake_acceptance_count': mean_fake_accept,
                 'mean_real_term': float(np.mean([d['real_term'] for d in details_list])),
                 'mean_fake_term': float(np.mean([d['fake_term'] for d in details_list])),
                 'mean_complexity_term': float(np.mean([d['complexity'] for d in details_list])),
@@ -791,6 +817,9 @@ class LGNTrainer:
                 # Worst trajectory details
                 'worst_real_error_count': details_list[worst_idx]['real_error_count'],
                 'worst_fake_acceptance_count': details_list[worst_idx]['fake_acceptance_count'],
+                # Data counts for reference
+                'num_real': num_real,
+                'num_fake': num_fake,
             }
 
         metrics: TrainStepMetrics = {
@@ -826,6 +855,10 @@ class LGNTrainer:
             'reward_details': reward_details,
             # Best trajectory LGN for visualization
             'best_traj_lgn': best_traj.terminal_state,
+            # Training accuracy (from reward computation, no extra cost)
+            'train_real_acc': train_real_acc,
+            'train_fake_acc': train_fake_acc,
+            'train_accuracy': train_accuracy,
         }
 
         # Update statistics
@@ -946,7 +979,7 @@ class LGNTrainer:
                     "debug/connected_inputs_min": metrics['connected_inputs_min'],
                     "debug/connected_inputs_max": metrics['connected_inputs_max'],
                 }
-                # Add reward details if available
+                # Add reward details and training accuracy if available
                 if metrics['reward_details'] is not None:
                     rd = metrics['reward_details']
                     wandb_metrics.update({
@@ -959,6 +992,16 @@ class LGNTrainer:
                         "reward/best_fake_acceptance_count": rd['best_fake_acceptance_count'],
                         "reward/worst_real_error_count": rd['worst_real_error_count'],
                         "reward/worst_fake_acceptance_count": rd['worst_fake_acceptance_count'],
+                    })
+                # Training accuracy (computed from reward, no extra cost)
+                if metrics['train_accuracy'] is not None:
+                    wandb_metrics.update({
+                        # train/accuracy: (TP+TN)/(TP+TN+FP+FN) - overall accuracy
+                        "train/accuracy": metrics['train_accuracy'],
+                        # train/real_acc: TP/(TP+FN) - real samples correctly accepted
+                        "train/real_acc": metrics['train_real_acc'],
+                        # train/fake_acc: TN/(TN+FP) - fake samples correctly rejected
+                        "train/fake_acc": metrics['train_fake_acc'],
                     })
                 if wandb is not None:
                     wandb.log(wandb_metrics, step=i)

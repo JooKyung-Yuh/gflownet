@@ -313,41 +313,25 @@ class RewardFunction:
     return -1 * self.lambda_complexity * lgn_state.get_num_gates()
   
     
-  def compute_reward(self, lgn_state:LGNState, real_data:list[list[int]], fake_data:list[list[int]], return_details:bool=False):
+  def compute_log_reward(self, lgn_state:LGNState, real_data:list[list[int]], fake_data:list[list[int]], return_details:bool=False, mode:str='log'):
     """
-    Compute the reward for a Logic Gate Network on Real and Fake datasets.
+    Compute the log-reward for a Logic Gate Network on Real and Fake datasets.
 
-    This is the MAIN PUBLIC METHOD that implements the complete reward function
-    from notion.md. It integrates three components:
-    1. Real data term: Penalizes misclassification of Real samples
-    2. Fake data term: Penalizes acceptance of Fake samples
-    3. Complexity penalty: Encourages simpler networks
+    This method always returns log R(F) for use in TB Loss:
+        Loss = (logZ + log P_F(τ) - log R(x))²
 
-    Mathematical Formulation (notion.md):
-    -------------------------------------
-    log R(F) = -C·∑ᵢ₌₁ᴺ (1-F(X⁽ⁱ⁾)) - log(∑ⱼ₌₁ᴹ F(X⁽⁻ʲ⁾) + ε) + Ω(F)
+    Two modes control how the fake term is computed:
 
-    Where:
-      ∑ᵢ₌₁ᴺ (1-F(X⁽ⁱ⁾)) = Raw count of misclassified Real samples
-      ∑ⱼ₌₁ᴹ F(X⁽⁻ʲ⁾) = Raw count of accepted Fake samples
-      Ω(F) = -λ · (number of gates in LGN)
-      C = Balance parameter between Real/Fake objectives
-      ε = Numerical stability constant (prevents log(0))
+    mode='log' (default, original notion.md):
+        log R(F) = -C·∑(1-F(X)) - log(∑F(X⁻) + ε) + Ω(F)
+        Fake term uses log → gradient diminishes for large fake_accept.
 
-    Component Breakdown:
-    --------------------
-    1. Real Term: -C · (# misclassified Real samples)
-       - Lower error count → Higher reward
-       - C controls the weight of this objective
-
-    2. Fake Term: -log(# accepted Fake samples + ε)
-       - Lower acceptance count → Higher reward
-       - Logarithmic penalty grows slowly for large acceptance counts
-       - ε prevents log(0) when perfectly rejecting all fakes
-
-    3. Complexity: -λ · (# gates)
-       - Fewer gates → Higher reward
-       - Encourages simpler, interpretable networks
+    mode='diff':
+        log R(F) = TP - FP + Ω(F)
+                 = ∑F(X⁺) - ∑F(X⁻) + Ω(F)
+        Direct difference between correct accepts and incorrect accepts.
+        Interpretation: R(F) = exp(TP - FP + Ω) is always positive.
+        This provides balanced gradient for both TP and FP.
 
     Args:
         lgn_state (LGNState):
@@ -355,94 +339,68 @@ class RewardFunction:
 
         real_data (list[list[int]]):
             List of Real data samples (rule-compliant binary vectors).
-            Each sample should ideally be classified as 1 (Accept).
-            Example: [[1,0,1,0,...], [0,1,0,1,...], ...]
 
         fake_data (list[list[int]]):
             List of Fake data samples (rule-violating binary vectors).
-            Each sample should ideally be classified as 0 (Reject).
-            Example: [[1,1,0,0,...], [0,0,1,1,...], ...]
+
+        return_details (bool):
+            If True, return dict with breakdown of reward components.
+
+        mode (str):
+            'log' (default): Original formula with log fake term.
+            'diff': TP - FP formula (balanced gradient).
 
     Returns:
-        float: Log-reward value (always non-positive, ≤ 0)
-            - Higher values (closer to 0) = Better performance
-            - Lower values (more negative) = Worse performance
-
-    Raises:
-        ValueError: If real_data or fake_data is empty (from helper methods).
-
-    Example:
-        >>> # Setup
-        >>> reward_fn = RewardFunction(C=1.0, epsilon=1e-6, lambda_complexity=0.1)
-        >>> lgn = LGNState(num_inputs=10, max_gates=15)
-        >>> lgn.add_gate(GateType.AND, [0, 1, 2])
-        >>> lgn.add_gate(GateType.OR, [3, 10])
-        >>>
-        >>> # Prepare data
-        >>> real_data = [[1,0,1,0,1,0,1,0,1,0], ...]  # 1000 samples
-        >>> fake_data = [[0,0,0,0,0,0,0,0,0,0], ...]  # 1000 samples
-        >>>
-        >>> # Compute reward
-        >>> reward = reward_fn.compute_reward(lgn, real_data, fake_data)
-        >>> print(f"Reward: {reward:.4f}")
-        >>> # Example output: Reward: -15.4321
-        >>>
-        >>> # Interpretation:
-        >>> # - Real term: -1.0 * 10 = -10.0 (10 errors out of 1000)
-        >>> # - Fake term: -log(50 + 1e-6) ≈ -3.91 (50 accepts out of 1000)
-        >>> # - Complexity: -0.1 * 2 = -0.2 (2 gates)
-        >>> # - Total: -10.0 + (-3.91) + (-0.2) = -14.11
-
-    Notes:
-        - This method uses RAW COUNTS (not normalized rates) following notion.md.
-        - All three terms are typically non-positive, so the total reward is ≤ 0.
-        - The reward is in log-space for numerical stability and theoretical consistency.
-        - Higher rewards (closer to 0) indicate better-performing networks.
-        - Perfect performance would be: 0 errors, 0 acceptances, 0 gates → reward ≈ -13.8
-          (dominated by -log(ε) term when fake_acceptance_count = 0)
-
-    Implementation Flow:
-        1. Call compute_real_error_count() to get raw error count
-        2. Call compute_fake_acceptance_count() to get raw acceptance count
-        3. Call _compute_complexity_penalty() to get gate penalty
-        4. Compute real_term = -C * error_count
-        5. Compute fake_term = -log(acceptance_count + ε)
-        6. Sum all three terms to get final log-reward
-
-    Design Rationale:
-        - Logarithmic penalty on fake acceptance prevents extreme penalties for
-          poorly performing networks (log grows slowly).
-        - Linear penalty on real errors with weight C allows balancing the two objectives.
-        - Complexity penalty prevents overfitting and encourages interpretability.
-        - Epsilon ensures numerical stability when the network perfectly rejects all fakes.
+        float: log R(F) value for TB Loss
     """
     # Step 1: Compute raw counts using helper methods
     real_error_count = self.compute_real_error_count(lgn_state, real_data)
     fake_acceptance_count = self.compute_fake_acceptance_count(lgn_state, fake_data)
     complexity_penalty = self._compute_complexity_penalty(lgn_state)
 
-    # Step 2: Compute each term of the reward function
-    real_term = -1 * self.C * real_error_count  # -C·∑(1-F(X⁽ⁱ⁾))
-    fake_term = -np.log(fake_acceptance_count + self.epsilon)  # -log(∑F(X⁽⁻ʲ⁾) + ε)
-    complexity = complexity_penalty  # Ω(F) = -λ·(# gates)
+    # Compute TP and FP for clarity
+    # TP = Real samples correctly accepted = num_real - real_error_count
+    # FP = Fake samples incorrectly accepted = fake_acceptance_count
+    tp = len(real_data) - real_error_count
+    fp = fake_acceptance_count
 
-    # Step 3: Sum all terms to get final log-reward
-    log_reward = real_term + fake_term + complexity
+    if mode == 'log':
+      # log R(F) = -C·real_err - log(fake_acc + ε) + Ω(F)
+      real_term = -self.C * real_error_count
+      fake_term = -np.log(fake_acceptance_count + self.epsilon)
+      log_reward = real_term + fake_term + complexity_penalty
+    elif mode == 'diff':
+      # log R(F) = (TP - FP) * C
+      # C acts as reward tempering: C < 1 smooths reward distribution, C > 1 sharpens
+      # R(F) = exp((TP - FP) * C) is always positive
+      real_term = tp   # ∑F(X⁺) = TP
+      fake_term = -fp  # -∑F(X⁻) = -FP
+      log_reward = (real_term + fake_term) * self.C
+    else:
+      raise ValueError(f"Invalid mode: {mode}. Must be 'log' or 'diff'.")
 
     if return_details:
       return {
         'log_reward': log_reward,
         'real_error_count': real_error_count,
         'fake_acceptance_count': fake_acceptance_count,
+        'tp': tp,
+        'fp': fp,
         'real_term': real_term,
         'fake_term': fake_term,
-        'complexity': complexity,
+        'complexity': complexity_penalty,
         'num_gates': lgn_state.get_num_gates(),
         'num_real': len(real_data),
         'num_fake': len(fake_data),
+        'mode': mode,
       }
 
     return log_reward
+
+  # Backward compatibility alias
+  def compute_reward(self, lgn_state:LGNState, real_data:list[list[int]], fake_data:list[list[int]], return_details:bool=False, mode:str='log'):
+    """Alias for compute_log_reward() for backward compatibility."""
+    return self.compute_log_reward(lgn_state, real_data, fake_data, return_details, mode)
     
     
     

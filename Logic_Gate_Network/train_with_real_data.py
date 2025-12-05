@@ -6,7 +6,7 @@ Train GNN policy network with real/fake data from generator.
 
 Usage:
     python train_with_real_data.py --iterations 100 --batch-size 8
-"""
+_"""
 
 import torch
 import argparse
@@ -107,7 +107,7 @@ def main():
     parser.add_argument('--max-gates', type=int, default=15, help='Maximum number of gates')
     parser.add_argument('--iterations', type=int, default=10000, help='Training iterations (gradient steps, recommended: 10000+)')
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size (recommended: 10-100)')
-    parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate for policy (TB paper: 5e-4)')
+    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate for policy (TB paper: 5e-4)')
     parser.add_argument('--lr-logz', type=float, default=5e-3, help='Learning rate for logZ (TB paper: 5e-3)')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda', 'mps'],
                         help='Device to use (auto=best available, mps=Apple Silicon GPU)')
@@ -136,6 +136,10 @@ def main():
                         help='Enable PyTorch profiler for N iterations (0 to disable). Outputs to profile_trace.json')
     parser.add_argument('--profile-detailed', action='store_true',
                         help='Include stack traces in profiler output (slower but more detailed)')
+    parser.add_argument('--reward-C', type=float, default=3.0,
+                        help='Balance parameter C for real error penalty (mode=log only). Default: 3.0')
+    parser.add_argument('--reward-mode', type=str, default='log', choices=['log', 'diff'],
+                        help='Reward mode: log (original) or diff (TP-FP). Default: log')
 
     args = parser.parse_args()
 
@@ -176,6 +180,30 @@ def main():
             name=run_name,
             config=vars(args)
         )
+
+        # Define metric descriptions for wandb charts
+        # Training metrics (from sampled trajectories)
+        wandb.define_metric("train/log_loss", summary="min", goal="minimize")
+        wandb.define_metric("train/accuracy", summary="max", goal="maximize")
+        wandb.define_metric("train/real_acc", summary="max", goal="maximize")
+        wandb.define_metric("train/fake_acc", summary="max", goal="maximize")
+
+        # Evaluation metrics (greedy sampling on test/train set)
+        # Classification metrics
+        wandb.define_metric("eval/accuracy", summary="max", goal="maximize")      # (TP+TN)/(TP+TN+FP+FN)
+        wandb.define_metric("eval/precision", summary="max", goal="maximize")     # TP/(TP+FP)
+        wandb.define_metric("eval/recall", summary="max", goal="maximize")        # TP/(TP+FN) = Sensitivity
+        wandb.define_metric("eval/specificity", summary="max", goal="maximize")   # TN/(TN+FP)
+        wandb.define_metric("eval/f1", summary="max", goal="maximize")            # 2*(P*R)/(P+R)
+        # Confusion matrix
+        wandb.define_metric("eval/TP", summary="max")
+        wandb.define_metric("eval/TN", summary="max")
+        wandb.define_metric("eval/FP", summary="min")
+        wandb.define_metric("eval/FN", summary="min")
+        # Legacy (backward compatibility)
+        wandb.define_metric("eval/real_acc", summary="max", goal="maximize")
+        wandb.define_metric("eval/fake_acc", summary="max", goal="maximize")
+
         print(f"\n✅ Wandb initialized: {wandb.run.name}")
         print(f"   Dashboard: {wandb.run.url}")
     else:
@@ -316,26 +344,25 @@ def main():
     print(f"  ✅ MDP and Action Space created (max_and_arity={args.max_and_arity})")
 
     # Create reward function connected to real data
-    # C=3.0: Weight real errors more heavily to prevent "reject everything" strategy
-    reward_fn = RewardFunction(C=3.0)
+    # C: Weight real errors more heavily to prevent "reject everything" strategy (mode=log only)
+    reward_fn = RewardFunction(C=args.reward_C)
 
     def compute_log_reward(lgn: LGNState) -> float:
         """
         Compute log-reward based on real/fake classification accuracy.
 
-        Returns log R(F) directly as defined in notion.md Eq. (2):
-            log R(F) = -C·∑(1-F(X⁽ⁱ⁾)) - log(∑F(X⁽⁻ʲ⁾) + ε) + Ω(F)
+        mode='log': log R(F) = -C·∑(1-F(X)) - log(∑F(X⁻) + ε) + Ω(F)
+        mode='diff': log R(F) = TP - FP + Ω(F)  (R = exp(TP-FP+Ω) always positive)
 
-        Note: Returns log-reward directly (can be negative).
-        This is used in TB Loss: Loss = (logZ + log P_F(τ) - log R(x))²
+        Returns log R(F) directly for TB Loss: Loss = (logZ + log P_F(τ) - log R(x))²
         """
-        return reward_fn.compute_reward(lgn, train_real, train_fake)
+        return reward_fn.compute_log_reward(lgn, train_real, train_fake, mode=args.reward_mode)
 
-    def compute_reward_details(lgn: LGNState) -> dict:
-        """Compute reward with detailed breakdown for wandb logging."""
-        return reward_fn.compute_reward(lgn, train_real, train_fake, return_details=True)
+    def compute_log_reward_details(lgn: LGNState) -> dict:
+        """Compute log-reward with detailed breakdown for wandb logging."""
+        return reward_fn.compute_log_reward(lgn, train_real, train_fake, return_details=True, mode=args.reward_mode)
 
-    print(f"  ✅ Reward function created")
+    print(f"  ✅ Reward function created (mode={args.reward_mode}, C={args.reward_C})")
 
     # Step 4: Create trainer
     print(f"\n[4/5] Creating trainer...")
@@ -347,7 +374,7 @@ def main():
         mdp=mdp,
         action_space=action_space,
         log_reward_fn=compute_log_reward,
-        reward_fn_details=compute_reward_details,  # For wandb logging
+        log_reward_fn_details=compute_log_reward_details,  # For wandb logging
         optimizer=None,  # Will be set below
         device=device,
         init_logZ=0.0,  # Start with Z=1
@@ -372,9 +399,23 @@ def main():
         evaluator = LGNEvaluator()
 
         def eval_fn():
-            """Sample LGNs using trainer.sample_greedy_batch and compute accuracy on test data."""
-            real_accs = []
-            fake_accs = []
+            """
+            Sample LGNs using trainer.sample_greedy_batch and compute accuracy on test data.
+
+            Returns metrics with TP, TN, FP, FN for confusion matrix:
+            - TP (True Positive): Real samples correctly accepted (output=1)
+            - TN (True Negative): Fake samples correctly rejected (output=0)
+            - FP (False Positive): Fake samples incorrectly accepted (output=1)
+            - FN (False Negative): Real samples incorrectly rejected (output=0)
+
+            Accuracy formulas:
+            - real_acc = TP / (TP + FN) = Recall/Sensitivity
+            - fake_acc = TN / (TN + FP) = Specificity
+            - accuracy = (TP + TN) / (TP + TN + FP + FN)
+            - precision = TP / (TP + FP)
+            """
+            # Accumulators for confusion matrix
+            total_tp, total_tn, total_fp, total_fn = 0, 0, 0, 0
 
             # Use trainer's sample_greedy_batch method (avoids code duplication)
             lgns = trainer.sample_greedy_batch(num_samples)
@@ -385,28 +426,73 @@ def main():
                 real_outputs = evaluator.evaluate_final_batch(lgn, test_real)
                 fake_outputs = evaluator.evaluate_final_batch(lgn, test_fake)
 
-                # real_acc: Real samples correctly accepted (output 1)
-                real_acc = real_outputs.count(1) / len(test_real)
-                real_accs.append(real_acc)
+                # TP: Real samples correctly accepted (output=1)
+                tp = real_outputs.count(1)
+                # FN: Real samples incorrectly rejected (output=0)
+                fn = len(test_real) - tp
 
-                # fake_acc: Fake samples correctly rejected (output 0)
-                fake_acc = fake_outputs.count(0) / len(test_fake)
-                fake_accs.append(fake_acc)
+                # TN: Fake samples correctly rejected (output=0)
+                tn = fake_outputs.count(0)
+                # FP: Fake samples incorrectly accepted (output=1)
+                fp = len(test_fake) - tn
+
+                total_tp += tp
+                total_tn += tn
+                total_fp += fp
+                total_fn += fn
+
+            # Average over num_samples
+            avg_tp = total_tp / num_samples
+            avg_tn = total_tn / num_samples
+            avg_fp = total_fp / num_samples
+            avg_fn = total_fn / num_samples
+
+            # Compute rates
+            num_real = len(test_real)
+            num_fake = len(test_fake)
+            recall = avg_tp / num_real if num_real > 0 else 0.0         # TP / (TP + FN) = Sensitivity
+            specificity = avg_tn / num_fake if num_fake > 0 else 0.0    # TN / (TN + FP)
+            accuracy = (avg_tp + avg_tn) / (num_real + num_fake) if (num_real + num_fake) > 0 else 0.0
+            precision = avg_tp / (avg_tp + avg_fp) if (avg_tp + avg_fp) > 0 else 0.0
+            f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
 
             return {
-                'real_acc': np.mean(real_accs),
-                'fake_acc': np.mean(fake_accs),
+                # Classification metrics (0-1)
+                'accuracy': accuracy,        # (TP+TN) / (TP+TN+FP+FN)
+                'precision': precision,      # TP / (TP+FP) - Accept한 것 중 Real 비율
+                'recall': recall,            # TP / (TP+FN) - Real 중 Accept한 비율 (=Sensitivity)
+                'specificity': specificity,  # TN / (TN+FP) - Fake 중 Reject한 비율
+                'f1': f1,                    # 2*(P*R)/(P+R) - Precision과 Recall의 조화평균
+                # Confusion matrix counts (averaged over samples)
+                'TP': avg_tp,
+                'TN': avg_tn,
+                'FP': avg_fp,
+                'FN': avg_fn,
+                # Legacy names for backward compatibility
+                'real_acc': recall,
+                'fake_acc': specificity,
             }
 
         return eval_fn
 
-    eval_fn = create_eval_fn(
-        trainer=trainer,
-        test_real=test_real,
-        test_fake=test_fake,
-        num_samples=args.eval_samples,
-    )
-    print(f"  ✅ Evaluation function created (eval_every={args.eval_every}, samples={args.eval_samples})")
+    # Create eval_fn: use test data if available, otherwise use train data
+    if args.test_ratio > 0:
+        eval_fn = create_eval_fn(
+            trainer=trainer,
+            test_real=test_real,
+            test_fake=test_fake,
+            num_samples=args.eval_samples,
+        )
+        print(f"  ✅ Evaluation function created (eval_every={args.eval_every}, samples={args.eval_samples})")
+    else:
+        # test_ratio=0: use train data for evaluation
+        eval_fn = create_eval_fn(
+            trainer=trainer,
+            test_real=train_real,
+            test_fake=train_fake,
+            num_samples=args.eval_samples,
+        )
+        print(f"  ✅ Evaluation function created (using train data, test_ratio=0)")
 
     # Step 5: Train!
     print(f"\n[5/5] Training...")
